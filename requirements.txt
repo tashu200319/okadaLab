@@ -1,0 +1,10 @@
+biopython>=1.85
+numpy>=2.0.2
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+requests>=2.31.0
+lxml>=4.9.0
+numba>=0.60.0
+llvmlite>=0.43.0
+pytz>=2023.3

@@ -395,7 +395,7 @@ def main():
     # === ユーザー設定可能なパラメータ ===
     seq_ratio = 20  # 解析に使用する配列長の割合(%)
     max_pdbs = 50   # 処理するPDB数の上限（Noneで無制限）
-    uniprot_ids = ["P25156"]  # UniProt IDリスト
+    uniprot_ids = ["O35433","Q9S574","Q2XVP4",""]  # UniProt IDリスト
     clean_old_pdbs = True  # 前のUniProt IDのPDBファイルを削除するか
     # ====================================
     

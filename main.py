@@ -342,12 +342,60 @@ def save_summary_statistics(uniprotid: str, fullName: str, organism: str,
     return combined_stats
 
 
+def save_uniprot_pdb_links(uniprotid: str, pdblist: List[str], 
+                           seq_ratio: float, dirpath: str,
+                           existing_links: pd.DataFrame = None):
+    """UniProt IDとPDB IDのリンクファイルを作成
+    
+    Parameters
+    ----------
+    uniprotid : str
+        UniProt ID
+    pdblist : list
+        PDB IDのリスト
+    seq_ratio : float
+        使用した配列比率
+    dirpath : str
+        出力ディレクトリ
+    existing_links : pd.DataFrame
+        既存のリンクデータ
+    
+    Returns
+    -------
+    pd.DataFrame
+        更新されたリンクデータ
+    """
+    # 新しいリンクデータを作成
+    new_links = pd.DataFrame({
+        'uniprotid': [uniprotid] * len(pdblist),
+        'pdbid': pdblist,
+        'seq_ratio': [seq_ratio] * len(pdblist)
+    })
+    
+    # 既存データと結合
+    if existing_links is not None and len(existing_links) > 0:
+        # 同じuniprotidとseq_ratioのデータを削除
+        existing_links = existing_links[
+            ~((existing_links['uniprotid'] == uniprotid) & 
+              (existing_links['seq_ratio'] == seq_ratio))
+        ]
+        combined_links = pd.concat([existing_links, new_links], ignore_index=True)
+    else:
+        combined_links = new_links
+    
+    # ファイル保存
+    links_file = os.path.join(dirpath, "uniprot_pdb_links.csv")
+    combined_links.to_csv(links_file, index=False)
+    
+    return combined_links
+
+
 def main():
     """メイン処理"""
     # === ユーザー設定可能なパラメータ ===
     seq_ratio = 20  # 解析に使用する配列長の割合(%)
     max_pdbs = 50   # 処理するPDB数の上限（Noneで無制限）
-    uniprot_ids = ["A0A0R4IMY7"]  # UniProt IDリスト
+    uniprot_ids = ["O35433","Q9S574","Q2XVP4",""]  # UniProt IDリスト
     clean_old_pdbs = True  # 前のUniProt IDのPDBファイルを削除するか
     # ====================================
     
@@ -393,9 +441,11 @@ def main():
     # 統計ファイルの既存データ読み込み
     details_file = os.path.join(dirpath, "score_details.csv")
     stats_file = os.path.join(dirpath, "summary_statistics.csv")
+    links_file = os.path.join(dirpath, "uniprot_pdb_links.csv")
     
     existing_details = None
     existing_stats = None
+    existing_links = None
     
     if os.path.exists(details_file):
         existing_details = pd.read_csv(details_file)
@@ -404,6 +454,10 @@ def main():
     if os.path.exists(stats_file):
         existing_stats = pd.read_csv(stats_file)
         print(f'Loaded existing summary_statistics.csv')
+    
+    if os.path.exists(links_file):
+        existing_links = pd.read_csv(links_file)
+        print(f'Loaded existing uniprot_pdb_links.csv')
     
     # 各IDを処理
     for uniprotid in uniprot_ids:
@@ -444,6 +498,7 @@ def main():
             # Normal + Substitution解析
             seqtype = 'nor+sub'
             pdbtuple = tuple(all_pdblist[0] + all_pdblist[1])
+            pdb_used = all_pdblist[0] + all_pdblist[1]  # リスト形式で保持
             print(f"\n### normal & mutant ###")
             print(f"PDB: {pdbtuple}")
             print(f"{len(pdbtuple)} entries were processed")
@@ -479,6 +534,13 @@ def main():
                 seq_ratio, dirpath, existing_stats
             )
             print(f"  -> summary_statistics.csv updated")
+            
+            # UniProt-PDBリンクを保存
+            print(f"Saving UniProt-PDB links...")
+            existing_links = save_uniprot_pdb_links(
+                uniprotid, pdb_used, seq_ratio, dirpath, existing_links
+            )
+            print(f"  -> uniprot_pdb_links.csv updated ({len(pdb_used)} PDB entries)")
             
             # エントリ作成(既存のsummary.csv用)
             row0 = df_all.iloc[0]
@@ -543,6 +605,7 @@ def main():
     print(f"  1. {os.path.abspath(filename)} (既存のサマリー)")
     print(f"  2. {os.path.abspath(details_file)} (残基ペアごとの詳細)")
     print(f"  3. {os.path.abspath(stats_file)} (タンパク質ごとの統計)")
+    print(f"  4. {os.path.abspath(links_file)} (UniProt-PDBリンク)")
     print(f"{'=' * 80}")
     print("Job Completed")
 

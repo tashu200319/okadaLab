@@ -127,7 +127,7 @@ def getcoord(trimsequence: pd.DataFrame) -> pd.DataFrame:
         pdbids.setdefault(pdbid, []).append(strand_id)
     
     for pdbid, chain_id in pdbids.items():
-        struct = pd.read_csv(f'atom_coord/{pdbid}.csv')
+        struct = pd.read_csv(f'atom_coord/{pdbid}.csv', dtype={'asym_id': str})
         struct["asym_id"] = struct["asym_id"].astype(str)
         struct = struct[struct["atom_id"] == "CA"]
         struct.drop(columns=['model_num', 'atom_id'], inplace=True)

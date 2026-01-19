@@ -44,6 +44,43 @@ BACKUP_DIR = ARCHIVE_DIR / "summary_backup"
 # プロセス間で共有するロック辞書
 pdb_locks = None
 
+def cleanup_pdb_files_after_analysis(uniprotid: str, pdb_used: List[str]):
+    """
+    解析完了後に使用したPDBファイルを削除
+    
+    Parameters
+    ----------
+    uniprotid : str
+        処理したUniProt ID
+    pdb_used : list
+        使用したPDB IDのリスト
+    """
+    import os
+    from pathlib import Path
+    
+    deleted_count = 0
+    
+    for pdbid in pdb_used:
+        # pdb_files/ ディレクトリ
+        pdb_file = Path(f"pdb_files/{pdbid.lower()}.cif")
+        if pdb_file.exists():
+            try:
+                pdb_file.unlink()
+                deleted_count += 1
+            except Exception as e:
+                print(f"  ⚠️ Failed to delete {pdb_file}: {e}")
+        
+        # atom_coord/ ディレクトリ（こちらは残す場合はコメントアウト）
+        # atom_csv = Path(f"atom_coord/{pdbid.upper()}.csv")
+        # if atom_csv.exists():
+        #     try:
+        #         atom_csv.unlink()
+        #     except Exception:
+        #         pass
+    
+    if deleted_count > 0:
+        print(f"  🧹 Cleaned {deleted_count} PDB files for {uniprotid}")
+
 def init_worker(lock_dict):
     """ワーカープロセス初期化時にロック辞書を設定"""
     global pdb_locks
@@ -298,6 +335,12 @@ def prep(uniprotid: str, methods: Optional[set] = None,
         cache_stats = get_cache_stats(pdblist)
         print(f"  📦 Cache: {cache_stats['cached']}/{cache_stats['total']} "
               f"({cache_stats['hit_rate']}% hit rate)")
+        print(f"  📥 Will download: {cache_stats['to_download']} PDB entries")
+        if pdblist:
+            pdb_list_str = ", ".join(pdblist[:10])  # 最初の10個を表示
+            if len(pdblist) > 10:
+                pdb_list_str += f", ... (+{len(pdblist)-10} more)"
+            print(f"  📋 PDB list: {pdb_list_str}")
         print(f"  Processing {len(pdblist)} PDB entries ...")
     
     nor_pdblist = []
@@ -402,7 +445,7 @@ def run_DSA(uniprotid: str, seqdata, export: bool, seqtype: str,
         print(f"Error: Not enough chains for {uniprotid}")
         return None, "", None, None
     
-    atomcoord = getcoord(trimsequence)
+    atomcoord = getcoord(trimsequence, uniprotid)
     if atomcoord is None or len(atomcoord) == 0:
         print(f"Error: atomcoord is empty for {uniprotid}")
         return None, "", None, None
@@ -425,8 +468,8 @@ def run_DSA(uniprotid: str, seqdata, export: bool, seqtype: str,
     distance_cols = distance.columns[2:]
     distance_data_df = distance[distance_cols].copy()
     merged_df = pd.concat([residue_num_df, distance_data_df], axis=1)
-    merged_df.to_csv(os.path.join(dirpath, f"distance_{uniprotid}.csv"), 
-                     index=False, header=False)
+    # merged_df.to_csv(os.path.join(dirpath, f"distance_{uniprotid}.csv"), 
+    #                  index=False, header=False)
     
     cis_index = []
     for col in distance.columns.values.tolist()[2:]:
@@ -649,6 +692,48 @@ class BatchWriter:
         self.links_buffer.clear()
         
         print(f"💾 Batch written: {count} entries")
+def cleanup_batch_pdb_files(keep_latest: int = 0):
+    """
+    pdb_filesディレクトリ全体をクリーンアップ
+    
+    Parameters
+    ----------
+    keep_latest : int
+        最新N件のファイルを残す（0=全削除）
+    """
+    import os
+    from pathlib import Path
+    
+    pdb_dir = Path("pdb_files")
+    if not pdb_dir.exists():
+        return
+    
+    # 全PDBファイルを取得
+    pdb_files = list(pdb_dir.glob("*.cif"))
+    
+    if keep_latest > 0:
+        # 更新日時でソートして古いものから削除
+        pdb_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        to_delete = pdb_files[keep_latest:]
+    else:
+        to_delete = pdb_files
+    
+    deleted_count = 0
+    for pdb_file in to_delete:
+        try:
+            pdb_file.unlink()
+            deleted_count += 1
+        except Exception as e:
+            print(f"  ⚠️ Failed to delete {pdb_file}: {e}")
+    
+    if deleted_count > 0:
+        print(f"  🧹 Batch cleanup: Deleted {deleted_count} PDB files")
+        
+        # ディスク容量を表示
+        import shutil
+        disk_usage = shutil.disk_usage("/")
+        free_gb = disk_usage.free / (1024**3)
+        print(f"  💾 Free disk space: {free_gb:.1f} GB")
 
 # ===== 並列処理用ワーカー関数 =====
 def process_single_uniprot(args: tuple) -> dict:
@@ -666,7 +751,7 @@ def process_single_uniprot(args: tuple) -> dict:
         config = Config()
         dirpath = config.OUTPUT_DIR
         
-        print(f"🔄 [{uniprotid}] Starting...")
+        print(f"📄 [{uniprotid}] Starting...")
         
         unidata = UniprotData(uniprotid)
         fullName = unidata.get_fullname()
@@ -779,6 +864,9 @@ def process_single_uniprot(args: tuple) -> dict:
         
         print(f"✅ [{uniprotid}] Completed")
         
+        # 🔴 追加：使用済みPDBファイルを削除（一時的に無効化）
+        # cleanup_pdb_files_after_analysis(uniprotid, pdb_used)
+        
         return {
             'success': True,
             'uniprotid': uniprotid,
@@ -790,6 +878,9 @@ def process_single_uniprot(args: tuple) -> dict:
         }
         
     except Exception as e:
+        # 🔴 追加：失敗時もクリーンアップ（一時的に無効化）
+        # cleanup_pdb_files_after_analysis(uniprotid, [])
+        
         error_msg = str(e)
         return {
             'success': False,
@@ -798,29 +889,87 @@ def process_single_uniprot(args: tuple) -> dict:
             'error_type': classify_error_type(error_msg),
             'traceback': traceback.format_exc()
         }
+    
 
 # ===== メイン処理（並列版） =====
 def main():
     """メイン処理（並列化対応 + 失敗ID自動記録）"""
     
-    # ===== ユーザー設定 =====
-    seq_ratio = 20
-    max_pdbs = 50
+    import argparse
+    
+    # ===== コマンドライン引数パーサー追加 =====
+    parser = argparse.ArgumentParser(description='DSA Analysis - High Performance Mode')
+    parser.add_argument('--ids', nargs='+', help='Specific UniProt IDs to analyze (e.g., --ids P01308 P00789)')
+    parser.add_argument('--file', help='File containing UniProt IDs (one per line)')  
+    parser.add_argument('--seq-ratio', type=float, default=20, help='Sequence ratio percentage (default: 20)')
+    parser.add_argument('--max-pdbs', type=int, default=50, help='Maximum PDB entries per ID (default: 50)')
+    parser.add_argument('--workers', type=int, default=7, help='Number of parallel workers (default: 7)')
+    parser.add_argument('--batch-size', type=int, default=50, help='Batch write size (default: 50)')
+    parser.add_argument('--test-mode', action='store_true', help='Enable test mode')
+    parser.add_argument('--test-count', type=int, default=433, help='Number of IDs for test mode (default: 433)')
+    parser.add_argument('--no-parallel', action='store_true', help='Disable parallel processing (for debugging)')
+    parser.add_argument('--skip-processed', action='store_true', default=True, help='Skip already processed IDs (default: True)')
+    parser.add_argument('--no-skip', dest='skip_processed', action='store_false', help='Reprocess all IDs')
+    
+    args = parser.parse_args()
+    
+    # ===== ユーザー設定（引数から取得） =====
+    seq_ratio = args.seq_ratio
+    max_pdbs = args.max_pdbs
     
     # 並列処理設定
-    ENABLE_PARALLEL = True
-    MAX_WORKERS = 7
-    BATCH_SIZE = 50
+    ENABLE_PARALLEL = not args.no_parallel
+    MAX_WORKERS = args.workers
+    BATCH_SIZE = args.batch_size
     
-    # 🆕 テストモード設定
-    TEST_MODE = False     # Falseで全ID解析
-    TEST_COUNT = 433     # テストで解析するID数
+    # テストモード設定
+    TEST_MODE = args.test_mode
+    TEST_COUNT = args.test_count
     
     # ===== Config初期化とID読み込み =====
     config = Config()
     
-    # UniProt IDリストを読み込み
-    uniprot_ids = config.load_uniprot_ids()
+    # コマンドライン引数でIDが指定されていればそれを使用
+    if args.ids:
+        uniprot_ids = args.ids
+        print(f"\n{'='*80}")
+        print(f"🎯 SPECIFIC ID MODE")
+        print(f"{'='*80}")
+        print(f"Analyzing {len(uniprot_ids)} specific ID(s):")
+        for uid in uniprot_ids:
+            print(f"  • {uid}")
+        print(f"{'='*80}\n")
+    
+    # ファイルが指定されている場合
+    elif args.file:
+        try:
+            with open(args.file, 'r') as f:
+                uniprot_ids = [line.strip() for line in f if line.strip()]
+                print(f"\n{'='*80}")
+                print(f"📄 FILE MODE")
+                print(f"{'='*80}")
+                print(f"Loaded {len(uniprot_ids)} IDs from {args.file}")
+                print(f"{'='*80}\n")
+        except FileNotFoundError:
+            print(f"❌ Error: File not found: {args.file}")
+            return
+    else:
+        # UniProt IDリストを読み込み
+        uniprot_ids = config.load_uniprot_ids()
+        
+        # テストモード：指定数だけに制限
+        if TEST_MODE and len(uniprot_ids) > TEST_COUNT:
+            print(f"\n{'='*80}")
+            print(f"🧪 TEST MODE ENABLED")
+            print(f"{'='*80}")
+            print(f"Original IDs: {len(uniprot_ids)}")
+            print(f"Test IDs: {TEST_COUNT}")
+            print(f"{'='*80}\n")
+            uniprot_ids = uniprot_ids[:TEST_COUNT]
+    
+    use_pdb_search_results = False
+    skip_processed = args.skip_processed
+    clean_old_pdbs = True
     
     # 🔵 テストモード：指定数だけに制限
     if TEST_MODE and len(uniprot_ids) > TEST_COUNT:
@@ -876,12 +1025,14 @@ def main():
     # 処理済みIDと失敗IDを両方除外
     summary_file = os.path.join(summaries_dir, "summary.csv")
     processed_ids = load_processed_uniprots(summary_file, seq_ratio) if skip_processed else set()
-    
+
     # 失敗IDもスキップ対象に追加
     failed_ids = failed_manager.get_failed_ids(seq_ratio, max_retries=MAX_RETRIES)
     skip_ids = processed_ids | failed_ids
-    
-    if skip_processed and skip_ids:
+
+    # 🔴 修正：--idsで指定された場合はスキップ処理をしない
+    # さらに--fileで指定された場合もスキップしない（テスト用）
+    if skip_processed and skip_ids and not args.ids and not args.file:  # ← ここに `and not args.file` を追加
         uniprot_ids = [uid for uid in uniprot_ids if uid not in skip_ids]
         if processed_ids or failed_ids:
             print(f"🚫 Skipping: {len(processed_ids)} processed + {len(failed_ids)} failed IDs")
@@ -953,6 +1104,8 @@ def main():
                     for args in task_args
                 }
                 
+                completed_batch = 0  # 🔴 追加
+
                 for i, future in enumerate(as_completed(futures), 1):
                     uniprotid = futures[future]
                     try:
@@ -982,6 +1135,11 @@ def main():
                         # 進捗表示
                         print(f"Progress: {i}/{len(uniprot_ids)} "
                               f"(✓{success_count} ✗{error_count})")
+                        
+                        # 🔴 追加：7件ごとにバッチクリーンアップ（一時的に無効化）
+                        # if i % 7 == 0:  # 7件ごとに
+                        #     cleanup_batch_pdb_files()
+                        #     print(f"🧹 Batch cleanup completed at {i}/{len(uniprot_ids)}")
                         
                     except Exception as e:
                         print(f"❌ [{uniprotid}] Fatal error: {e}")
@@ -1077,3 +1235,5 @@ if __name__ == "__main__":
     trim_dir, backup_dir = setup_archive_dirs(config.OUTPUT_DIR)
     main()
     auto_archive_output()
+
+

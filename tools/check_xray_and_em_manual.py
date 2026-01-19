@@ -334,7 +334,8 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Optimized UniProt X-ray/EM checker')
-    parser.add_argument('--file', required=True, help='File containing UniProt IDs')
+    parser.add_argument('--file', required=True, help='File containing UniProt IDs (txt or csv)')
+    parser.add_argument('--csv-column', default='uniprotid', help='Column name if input is CSV (default: uniprotid)')
     parser.add_argument('--output', default='./output/manual_xray_em_check.csv')
     parser.add_argument('--workers', type=int, default=20, help='Parallel workers (default: 20)')
     parser.add_argument('--save-interval', type=int, default=100, help='Auto-save every N IDs (default: 100)')
@@ -342,16 +343,34 @@ def main():
     
     args = parser.parse_args()
     
+    # ファイルの拡張子をチェック
+    file_ext = os.path.splitext(args.file)[1].lower()
+    
     try:
-        with open(args.file, 'r') as f:
-            uniprot_ids = [line.strip() for line in f if line.strip()]
+        if file_ext == '.csv':
+            # CSVファイルの場合
+            df = pd.read_csv(args.file)
+            if args.csv_column not in df.columns:
+                print(f"❌ Error: Column '{args.csv_column}' not found in CSV")
+                print(f"Available columns: {', '.join(df.columns)}")
+                return
+            uniprot_ids = df[args.csv_column].dropna().astype(str).tolist()
+        else:
+            # テキストファイルの場合
+            with open(args.file, 'r') as f:
+                uniprot_ids = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
         print(f"❌ Error: File not found: {args.file}")
+        return
+    except Exception as e:
+        print(f"❌ Error reading file: {e}")
         return
     
     if not uniprot_ids:
         print("❌ Error: No UniProt IDs found")
         return
+    
+    print(f"📋 Loaded {len(uniprot_ids)} UniProt IDs from {args.file}")
     
     check_manual_list_optimized(
         uniprot_ids,

@@ -27,7 +27,7 @@ class Config:
         self.USE_EM = True
         
         # 検索モード追加
-        self.SEARCH_MODE = "AND"  # "AND" or "OR"
+        self.SEARCH_MODE = "OR"  # "AND" or "OR"
         
         # 解析閾値
         self.PDB_THRESHOLD = 1          # 最小PDB数

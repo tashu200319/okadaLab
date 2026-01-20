@@ -8,7 +8,7 @@ from itertools import combinations
 from numba import jit
 
 
-@jit(nopython=True)
+@jit
 def calculat(atom1: np.ndarray, atom2: np.ndarray) -> float:
     """
     2つの原子間の距離を計算（高精度版）

@@ -23,13 +23,24 @@ def downloadpdb(pdbid: str):
     pdbid : str
         PDB ID (例: 1ABC)
     """
-    pdb_list.retrieve_pdb_file(pdbid, pdir="pdb_files/", file_format="mmCif")
+    import os
+    cif_file = f"pdb_files/{pdbid.lower()}.cif"
+    if not os.path.exists(cif_file):
+        try:
+            pdb_list.retrieve_pdb_file(pdbid, pdir="pdb_files/", file_format="mmCif", overwrite=False)
+        except Exception as e:
+            print(f"Desired structure not found or download failed. '{pdbid}': {e}")
+            return False
+    return True
 
 
 def _open(pdbid: str):
     """CIFファイルを開く(gzip対応)"""
     file = pdbid.lower() + ".cif"
     ciffile = "pdb_files/" + file
+    
+    if not os.path.exists(ciffile):
+        raise FileNotFoundError(f"No such file or directory: '{ciffile}'")
     
     if guess_type(file)[1] == "gzip":
         return gzip.open(ciffile, mode='rt')
@@ -103,8 +114,8 @@ class CifData:
         # Chain情報の構築
         self._build_chain_info(mmcifdict)
         
-        # 原子座標の取得
-        self._extract_atom_coord(mmcifdict)
+        # 原子座標の取得（atom_coord保存は不要になったためスキップ）
+        # self._extract_atom_coord(mmcifdict)
     
     def _build_chain_info(self, mmcifdict):
         """Chain情報を構築"""

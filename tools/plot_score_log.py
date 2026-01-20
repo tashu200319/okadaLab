@@ -130,10 +130,23 @@ def plot_score_scatter(csv_file: str,
         basename.replace('.csv', f'_{y_axis}_scatter.png')
     )
     
+    # ★ 既存ファイルがあればスキップ
+    if os.path.exists(output_file):
+        print(f"↩️  Skip (already exists): {os.path.basename(output_file)}")
+        plt.close()
+        return None
+    
     plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
     plt.close()
     
     return output_file
+
+    
+    plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
+    plt.close()
+    
+    return output_file
+
 
 
 def plot_all_score_scatter(input_dir: str,
@@ -230,67 +243,144 @@ def plot_all_score_scatter(input_dir: str,
     
     return output_files
 
+def reorganize_existing_plots(scatter_dir: str = '/Users/tashiroshuya/Desktop/okadalab/output/score_details/scatter'):
+    """既存の散布図を整理（新旧両方の命名規則に対応）"""
+    import shutil
+    import glob
+    
+    # with_and_search内にサブディレクトリ作成
+    with_and_search_dir = os.path.join(scatter_dir, 'with_and_search')
+    score_log_dir = os.path.join(with_and_search_dir, 'with_score_log')
+    distance_std_dir = os.path.join(with_and_search_dir, 'with_distance_std')
+    
+    os.makedirs(score_log_dir, exist_ok=True)
+    os.makedirs(distance_std_dir, exist_ok=True)
+    
+    moved_score = 0
+    moved_std = 0
+    
+    # 1. with_and_search/ 直下のファイルを移動
+    # 新しい命名規則: *_score_log_scatter.png
+    for file in glob.glob(os.path.join(with_and_search_dir, '*_score_log_scatter.png')):
+        dest = os.path.join(score_log_dir, os.path.basename(file))
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.move(file, score_log_dir)
+        moved_score += 1
+    
+    # 新しい命名規則: *_distance_std_scatter.png
+    for file in glob.glob(os.path.join(with_and_search_dir, '*_distance_std_scatter.png')):
+        dest = os.path.join(distance_std_dir, os.path.basename(file))
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.move(file, distance_std_dir)
+        moved_std += 1
+    
+    # 古い命名規則: score_details_*_scatter.png（suffix無し）
+    # これらは score_log として扱う
+    for file in glob.glob(os.path.join(with_and_search_dir, 'score_details_*_scatter.png')):
+        # 新しい命名規則のファイルは除外（すでに処理済み）
+        basename = os.path.basename(file)
+        if '_score_log_scatter.png' in basename or '_distance_std_scatter.png' in basename:
+            continue
+        
+        # 古い形式のファイルを score_log に移動
+        dest = os.path.join(score_log_dir, basename)
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.move(file, score_log_dir)
+        moved_score += 1
+        print(f"  📦 Moved old format: {basename}")
+    
+    # 2. with_score_log/ フォルダの中身を統合
+    old_score_log_dir = os.path.join(scatter_dir, 'with_score_log')
+    if os.path.exists(old_score_log_dir):
+        # score_log ファイルを移動
+        for file in glob.glob(os.path.join(old_score_log_dir, '*_score_log_scatter.png')):
+            dest = os.path.join(score_log_dir, os.path.basename(file))
+            if os.path.exists(dest):
+                os.remove(dest)
+            shutil.move(file, score_log_dir)
+            moved_score += 1
+        
+        # 古い命名規則のファイルも移動
+        for file in glob.glob(os.path.join(old_score_log_dir, 'score_details_*_scatter.png')):
+            basename = os.path.basename(file)
+            if '_score_log_scatter.png' in basename or '_distance_std_scatter.png' in basename:
+                continue
+            dest = os.path.join(score_log_dir, basename)
+            if os.path.exists(dest):
+                os.remove(dest)
+            shutil.move(file, score_log_dir)
+            moved_score += 1
+        
+        # distance_std ファイルを移動
+        for file in glob.glob(os.path.join(old_score_log_dir, '*_distance_std_scatter.png')):
+            dest = os.path.join(distance_std_dir, os.path.basename(file))
+            if os.path.exists(dest):
+                os.remove(dest)
+            shutil.move(file, distance_std_dir)
+            moved_std += 1
+        
+        # 空になったwith_score_log/フォルダを削除
+        try:
+            os.rmdir(old_score_log_dir)
+            print(f"🗑️  Removed empty directory: {old_score_log_dir}")
+        except OSError as e:
+            remaining = os.listdir(old_score_log_dir)
+            print(f"⚠️  Directory not empty ({len(remaining)} files remaining), keeping: {old_score_log_dir}")
+    
+    print(f"\n✅ Reorganized: {moved_score} score_log, {moved_std} distance_std plots")
+    print(f"📂 New structure:")
+    print(f"   {score_log_dir}")
+    print(f"   {distance_std_dir}")
 
 def main():
     """メイン処理"""
     import argparse
-    
+    import os
+
     parser = argparse.ArgumentParser(
-        description='Generate scatter plots with score_log or distance_std from score_details files'
+        description="Generate scatter plots with score_log or distance_std from score_details files"
     )
     parser.add_argument(
-        '--input-dir',
-        default='/Users/tashiroshuya/Desktop/okadaLab/output/score_details/with_and_search',
-        help='Input directory containing score_details CSV files'
+        "--input-dir",
+        default="/Users/tashiroshuya/Desktop/okadaLab/output/score_details/with_and_search",
+        help="Input directory containing score_details CSV files",
     )
     parser.add_argument(
-        '--output-dir',
-        default='/Users/tashiroshuya/Desktop/okadaLab/output/score_details/scatter/with_score_log',
-        help='Output directory for scatter plots'
+        "--output-root",
+        default="/Users/tashiroshuya/Desktop/okadaLab/output/score_details/scatter",
+        help="Root output directory (default: .../scatter)",
     )
     parser.add_argument(
-        '--y-axis',
-        choices=['score_log', 'distance_std'],
-        default='score_log',
-        help='Y-axis type: score_log or distance_std (default: score_log)'
+        "--y-axis",
+        choices=["score_log", "distance_std"],
+        default="score_log",
+        help="Y-axis type: score_log or distance_std (default: score_log)",
     )
-    parser.add_argument(
-        '--point-size',
-        type=int,
-        default=5,
-        help='Point size (default: 5)'
-    )
-    parser.add_argument(
-        '--alpha',
-        type=float,
-        default=0.4,
-        help='Point transparency (default: 0.4)'
-    )
-    parser.add_argument(
-        '--dpi',
-        type=int,
-        default=300,
-        help='Image resolution (default: 300)'
-    )
-    parser.add_argument(
-        '--max-files',
-        type=int,
-        default=None,
-        help='Maximum number of files to process (for testing)'
-    )
-    
+    parser.add_argument("--point-size", type=int, default=5)
+    parser.add_argument("--alpha", type=float, default=0.4)
+    parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument("--max-files", type=int, default=None)
+
     args = parser.parse_args()
-    
+
+    # ★ y_axis に応じて出力先を自動で決める
+    if args.y_axis == "score_log":
+        output_dir = os.path.join(args.output_root, "with_score_log")
+    else:
+        output_dir = os.path.join(args.output_root, "with_distance_std")
+
     plot_all_score_scatter(
         input_dir=args.input_dir,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
         y_axis=args.y_axis,
         point_size=args.point_size,
         alpha=args.alpha,
         dpi=args.dpi,
-        max_files=args.max_files
+        max_files=args.max_files,
     )
-
 
 if __name__ == "__main__":
     main()

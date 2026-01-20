@@ -128,27 +128,40 @@ class UniprotData:
     
     def _normalize_method_label(self, method_val: str) -> Optional[str]:
         """
-        UniProt JSON の Method 文字列を
-        'X-ray' / 'EM' / 'NMR' / None に正規化する。
-        """
+    UniProt JSON の Method 文字列を
+    'X-ray' / 'EM' / 'NMR' / None に正規化する。
+    """
         if not method_val:
             return None
-
+        
         s = method_val.lower()
 
-        # X-ray 系
-        if "x-ray" in s or "xray" in s:
+    # 🔍 デバッグ出力（一時的に追加）
+    # print(f"  [DEBUG] Raw Method: '{method_val}' → Normalized: ", end="")
+
+    # X-ray 系
+        if "x-ray" in s or "xray" in s or "diffraction" in s:
+        # print("X-ray")
             return "X-ray"
 
-        # EM 系
-        if "electron microscopy" in s or "electron cryo-microscopy" in s or "cryo-em" in s:
+    # EM 系（より広範囲に対応）
+        if any(keyword in s for keyword in [
+        "electron microscopy", 
+        "electron cryo-microscopy",
+        "cryo-em",
+        "cryo-electron microscopy",
+        "em"  # ← "EM"単独も追加
+        ]):
+        # print("EM")
             return "EM"
 
-        # NMR 系
+    # NMR 系
         if "nmr" in s:
+        # print("NMR")
             return "NMR"
 
-        # 対応外の Method は無視
+    # 対応外の Method は無視
+    # print(f"None (unrecognized)")
         return None
     
     
@@ -230,10 +243,8 @@ class UniprotData:
     
     def pdblist(self, method="") -> List[str]:
         """PDB IDのリストを取得"""
-        try:
-            return self.pdbdata.columns.tolist()
-        except AttributeError:
-            return self.getpdbdata(method).columns.tolist()
+        pdbdata = self.getpdbdata(method)
+        return pdbdata.columns.tolist()
     
     def position(self, pdbid: str) -> Tuple[Optional[int], Optional[int]]:
         """

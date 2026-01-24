@@ -943,19 +943,43 @@ def main():
     # ファイルが指定されている場合
     elif args.file:
         try:
-            with open(args.file, 'r') as f:
-                uniprot_ids = [line.strip() for line in f if line.strip()]
-                print(f"\n{'='*80}")
-                print(f"📄 FILE MODE")
-                print(f"{'='*80}")
-                print(f"Loaded {len(uniprot_ids)} IDs from {args.file}")
-                print(f"{'='*80}\n")
-        except FileNotFoundError:
-            print(f"❌ Error: File not found: {args.file}")
+            # 修正：単なるテキストとしてではなく、CSVとして読み込む
+            df = pd.read_csv(args.file)
+            
+            # 1列目のデータから、最初のID部分（カンマの前まで）だけを取得
+            raw_ids = df.iloc[:, 0].astype(str).tolist()
+            uniprot_ids = []
+            for rid in raw_ids:
+                clean_id = rid.strip().split(',')[0]
+                # ヘッダー行や空行を除外
+                if clean_id and clean_id.lower() != 'uniprotid':
+                    uniprot_ids.append(clean_id)
+            
+            print(f"\n{'='*80}")
+            print(f"📄 FILE MODE (CSV Parsed)")
+            print(f"{'='*80}")
+            print(f"Loaded {len(uniprot_ids)} IDs from {args.file}")
+            print(f"{'='*80}\n")
+        except Exception as e:
+            print(f"❌ Error reading file {args.file}: {e}")
             return
     else:
-        # UniProt IDリストを読み込み
-        uniprot_ids = config.load_uniprot_ids()
+        # 直接パンダスで読み込み、1列目だけを確実に取得
+        print(f"📂 Loading: {config.INPUT_FILE}")
+        df = pd.read_csv(config.INPUT_FILE)
+        
+        # 1列目のデータから、カンマが含まれていても最初のIDだけを抽出する
+        raw_ids = df.iloc[:, 0].astype(str).tolist()
+        uniprot_ids = []
+        for rid in raw_ids:
+            clean_id = rid.strip().split(',')[0] # カンマで分割して最初の1つだけ取る
+            if clean_id and clean_id.lower() != 'uniprotid': # ヘッダー混入防止
+                uniprot_ids.append(clean_id)
+        
+        print(f"✅ Extracted {len(uniprot_ids)} valid IDs")
+
+        # 余計なスペースや改行を削除するガードも入れる
+        uniprot_ids = [uid.strip() for uid in uniprot_ids if uid.strip()]
         
         # テストモード：指定数だけに制限
         if TEST_MODE and len(uniprot_ids) > TEST_COUNT:
@@ -1235,5 +1259,4 @@ if __name__ == "__main__":
     trim_dir, backup_dir = setup_archive_dirs(config.OUTPUT_DIR)
     main()
     auto_archive_output()
-
 

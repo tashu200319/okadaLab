@@ -106,57 +106,25 @@ class Config:
     def load_uniprot_ids(self, 
                         filename: str = "has_both_ids_list.txt",
                         fallback_csv: str = "unique_uniprots.csv") -> List[str]:
-        """
-        UniProt IDリストを読み込む
-        
-        優先順位:
-        1. output/has_both_ids_list.txt
-        2. output/links/unique_uniprots.csv
-        3. config/target_ids.txt
-        
-        Parameters
-        ----------
-        filename : str
-            メインのIDリストファイル名
-        fallback_csv : str
-            フォールバック用CSVファイル名
-        
-        Returns
-        -------
-        List[str]
-            UniProt IDのリスト
-        """
+        """UniProt IDリストを読み込む（最小修正版）"""
         output_dir = Path(self.OUTPUT_DIR)
         
-        # 優先: output/has_both_ids_list.txt
+        # 1. 抽出した精鋭リストを最優先でチェック（追加箇所）
+        target_csv = output_dir / "only_true_results.csv"
+        if target_csv.exists():
+            return self._load_uniprot_from_csv(target_csv)
+        
+        # 2. 既存の処理（引数エラーを回避するために維持）
         main_file = output_dir / filename
         if main_file.exists():
             ids = self._load_uniprot_from_txt(main_file)
-            if ids:
-                return ids
+            if ids: return ids
         
-        # フォールバック: output/links/unique_uniprots.csv
         fallback_file = output_dir / "links" / fallback_csv
         if fallback_file.exists():
             ids = self._load_uniprot_from_csv(fallback_file)
-            if ids:
-                return ids
-        
-        # config/ディレクトリもチェック
-        config_dir = Path("./config")
-        config_file = config_dir / filename
-        if config_file.exists():
-            ids = self._load_uniprot_from_txt(config_file)
-            if ids:
-                return ids
-        
-        # エラー表示
-        if self.VERBOSE:
-            print(f"⚠️  Warning: No UniProt ID file found")
-            print(f"   Tried: {main_file}")
-            print(f"          {fallback_file}")
-            print(f"          {config_file}")
-        
+            if ids: return ids
+            
         return []
     
     def _load_uniprot_from_txt(self, filepath: Path) -> List[str]:

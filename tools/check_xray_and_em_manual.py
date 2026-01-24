@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # グローバル変数でリクエスト制御
 request_lock = threading.Lock()
 last_request_time = 0
-MIN_REQUEST_INTERVAL = 0.05  # 50ms
+MIN_REQUEST_INTERVAL = 0.03  # 50ms
 
 
 def rate_limited_request():

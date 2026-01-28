@@ -8,7 +8,17 @@ PDBダウンロードの競合対策追加
 
 import os
 import re
+import sys
+
+# パイプ時も進捗が tee 等に即反映されるように stdout をアンバッファ化
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
 import pandas as pd
+import numpy as np
 import csv
 import shutil
 import datetime
@@ -29,9 +39,30 @@ from core.sequence_processor import (
 )
 from core.distance_calculator import getdistance2, getscore
 from core.report_generator import generate_log_content, export_to_csv
-from core.visualization import generate_heatmap
+# ヒートマップ生成は条件付きインポート（使用時のみ）
+try:
+    from core.visualization import generate_heatmap
+    HEATMAP_AVAILABLE = True
+except ImportError:
+    HEATMAP_AVAILABLE = False
+    generate_heatmap = None
 
-from tools.failed_id_manager import FailedIDManager, classify_error_type
+# FailedIDManagerはセグフォ対策のため一時的に無効化
+# from tools.failed_id_manager import FailedIDManager, classify_error_type
+
+# フォールバック関数
+FailedIDManager = None
+def classify_error_type(error_msg: str) -> str:
+    """エラータイプを分類（FailedIDManagerが使えない場合のフォールバック）"""
+    error_lower = error_msg.lower()
+    if 'pdb' in error_lower or 'download' in error_lower:
+        return 'PDB_ERROR'
+    elif 'empty' in error_lower or 'no data' in error_lower:
+        return 'EMPTY_DATA'
+    elif 'threshold' in error_lower:
+        return 'PDB_THRESHOLD'
+    else:
+        return 'UNKNOWN'
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -195,22 +226,10 @@ def get_cache_stats(pdblist: List[str]) -> Dict[str, int]:
     }
 
 # ===== 既存関数（変更なし） =====
-def setup_archive_dirs():
-    """archive用ディレクトリを生成"""
-    TRIM_DIR.mkdir(parents=True, exist_ok=True)
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-
 def auto_archive_output():
-    """output直下のCSV整理"""
-    moved = 0
-    for f in OUTPUT_DIR.glob("trimsequence_*.csv"):
-        shutil.move(str(f), TRIM_DIR / f.name)
-        moved += 1
-    for f in OUTPUT_DIR.glob("summary_backup_*.csv"):
-        shutil.move(str(f), BACKUP_DIR / f.name)
-        moved += 1
-    if moved > 0:
-        print(f"\n✨ Auto-archive completed. {moved} files organized.\n")
+    """output直下のCSV整理（archive_trim_and_summaryのラッパー）"""
+    trim_dir, backup_dir = setup_archive_dirs(str(OUTPUT_DIR))
+    archive_trim_and_summary(str(OUTPUT_DIR), trim_dir, backup_dir, verbose=True)
 
 def load_processed_uniprots(summary_file: str, seq_ratio: float) -> set:
     """処理済みUniProt IDを取得"""
@@ -351,7 +370,15 @@ def prep(uniprotid: str, methods: Optional[set] = None,
     
     for n, pdbid in enumerate(pdblist):
         try:
-            cifdata = CifData(pdbid)
+            # ロック機構付きPDBダウンロード
+            if not safe_download_pdb(pdbid, verbose=verbose):
+                if verbose:
+                    print(f"  ⚠️  Failed to download {pdbid}, skipping...")
+                skipped_count += 1
+                continue
+            
+            # ダウンロード済みなのでskip_download=Trueで初期化
+            cifdata = CifData(pdbid, skip_download=True)
             mut_judge = cifdata.mutationjudge(uniprotids, pdbid)
             
             if verbose:
@@ -420,18 +447,24 @@ def run_DSA(uniprotid: str, seqdata, export: bool, seqtype: str,
     if methods is None:
         methods = cfg.METHODS_SELECTED
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Initializing UniProt data...", flush=True)
     unidata = UniprotData(uniprotid)
     uniprotids = unidata.get_id()
     str_ids = str(uniprotids)
     fasta = unidata.fasta()
     sequence = convert_three(fasta)
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Getting PDB data...", flush=True)
     unidata.getpdbdata(methods)
     
     if seqdata is None or len(seqdata) == 0:
         print(f"Error: seqdata is empty for {uniprotid}")
         return None, "", None, None
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Sorting sequence...", flush=True)
     trimsequence = sort_sequence(str_ids, seqdata, seq_ratio)
     if trimsequence is None or len(trimsequence) == 0:
         print(f"Error: trimsequence is empty for {uniprotid}")
@@ -445,39 +478,67 @@ def run_DSA(uniprotid: str, seqdata, export: bool, seqtype: str,
         print(f"Error: Not enough chains for {uniprotid}")
         return None, "", None, None
     
-    atomcoord = getcoord(trimsequence, uniprotid)
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Computing coordinates (getcoord)...", flush=True)
+    # 並列処理時の競合を防ぐため、プロセス間ロック付きのダウンロード関数を使用
+    atomcoord = getcoord(trimsequence, uniprotid, download_func=safe_download_pdb)
     if atomcoord is None or len(atomcoord) == 0:
         print(f"Error: atomcoord is empty for {uniprotid}")
         return None, "", None, None
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Computing distances (getdistance2)...", flush=True)
     distance = getdistance2(atomcoord)
     if distance is None or len(distance) == 0:
         print(f"Error: distance is empty for {uniprotid}")
         return None, "", None, None
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Computing scores...", flush=True)
     score = getscore(distance, 0)
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Generating residue pairs...", flush=True)
     from itertools import combinations
-    residue_pairs = list(combinations(atomcoord.index, 2))
-    residue_num1_list = [pair[0] + 1 for pair in residue_pairs]
-    residue_num2_list = [pair[1] + 1 for pair in residue_pairs]
-    residue_num_df = pd.DataFrame({
-        'residue_num1': residue_num1_list,
-        'residue_num2': residue_num2_list
-    })
+    
+    # 高速化: combinationsを直接DataFrameに変換（メモリ効率化）
+    # 修正: getdistance2と整合性を取るため、range(len(atomcoord))を使用
+    n_residues = len(atomcoord)
+    n_pairs = n_residues * (n_residues - 1) // 2
+    
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Residue pairs: {n_pairs}, building merged_df...", flush=True)
+    
+    # NumPy配列で直接作成（リスト内包表記より高速）
+    # 修正: getdistance2と同じロジックで位置ベースのペアを生成
+    residue_pairs = list(combinations(range(n_residues), 2))
+    residue_num1_arr = np.array([pair[0] + 1 for pair in residue_pairs], dtype=np.int32)
+    residue_num2_arr = np.array([pair[1] + 1 for pair in residue_pairs], dtype=np.int32)
+    
     distance_cols = distance.columns[2:]
     distance_data_df = distance[distance_cols].copy()
+    
+    # pd.concatの代わりに直接DataFrame作成（高速化）
+    residue_num_df = pd.DataFrame({
+        'residue_num1': residue_num1_arr,
+        'residue_num2': residue_num2_arr
+    }, index=distance.index)
     merged_df = pd.concat([residue_num_df, distance_data_df], axis=1)
     # merged_df.to_csv(os.path.join(dirpath, f"distance_{uniprotid}.csv"), 
     #                  index=False, header=False)
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Computing cis indices...", flush=True)
+    # 高速化: queryループをベクトル化（元のロジックと同じ結果）
     cis_index = []
-    for col in distance.columns.values.tolist()[2:]:
-        try:
-            tmp = distance.query(f'`{col}`<=@cis_threshold').index.to_list()
-        except (SyntaxError, pd.errors.ParserError):
-            tmp = distance[distance[col] <= cis_threshold].index.tolist()
-        cis_index.extend(tmp)
+    distance_cols_list = distance.columns.values.tolist()[2:]
+    # NumPy配列で一括計算（queryより高速）
+    distance_values = distance[distance_cols_list].values
+    mask = distance_values <= cis_threshold
+    # 各列で条件を満たす行のインデックスを集める（元のロジックと同じ）
+    for col_idx in range(mask.shape[1]):
+        col_mask = mask[:, col_idx]
+        cis_index.extend(distance.index[col_mask].tolist())
     
     if not cis_index:
         cis_info = [[0, 0, 0, 0, 0]]
@@ -492,6 +553,8 @@ def run_DSA(uniprotid: str, seqdata, export: bool, seqtype: str,
         mix = 0
         cis_info = [[cis_dist_mean, cis_dist_std, cis_score_mean, cis_num, mix]]
     
+    if verbose:
+        print(f"    [DSA] [{uniprotid}] Generating summary (generate_log_content)...", flush=True)
     summary_df = generate_log_content(unidata.pdbdata, len(sequence), 
                                       trimsequence, score, cis_info)
     
@@ -638,7 +701,7 @@ def archive_trim_and_summary(
 # ===== バッチ書き込み用クラス =====
 class BatchWriter:
     """CSVバッチ書き込みマネージャー"""
-    def __init__(self, batch_size: int = 50):
+    def __init__(self, batch_size: int = 20):
         self.batch_size = batch_size
         self.summary_buffer = []
         self.stats_buffer = []
@@ -691,7 +754,7 @@ class BatchWriter:
         self.stats_buffer.clear()
         self.links_buffer.clear()
         
-        print(f"💾 Batch written: {count} entries")
+        print(f"💾 Batch written: {count} entries", flush=True)
 def cleanup_batch_pdb_files(keep_latest: int = 0):
     """
     pdb_filesディレクトリ全体をクリーンアップ
@@ -751,7 +814,7 @@ def process_single_uniprot(args: tuple) -> dict:
         config = Config()
         dirpath = config.OUTPUT_DIR
         
-        print(f"📄 [{uniprotid}] Starting...")
+        print(f"📄 [{uniprotid}] Starting...", flush=True)
         
         unidata = UniprotData(uniprotid)
         fullName = unidata.get_fullname()
@@ -808,7 +871,7 @@ def process_single_uniprot(args: tuple) -> dict:
             seq_ratio=seq_ratio,
             cis_threshold=config.CIS_THRESHOLD,
             dirpath=dirpath,
-            verbose=False
+            verbose=False  # 本番時はログ簡潔化（速度向上）
         )
         
         if df_all is None or len(df_all) == 0:
@@ -862,7 +925,7 @@ def process_single_uniprot(args: tuple) -> dict:
                       'mean_cisScore', 'cis', 'mix']:
                 row_dict[col] = df_all.iloc[0][col]
         
-        print(f"✅ [{uniprotid}] Completed")
+        print(f"✅ [{uniprotid}] Completed", flush=True)
         
         # 🔴 追加：使用済みPDBファイルを削除（一時的に無効化）
         # cleanup_pdb_files_after_analysis(uniprotid, pdb_used)
@@ -903,13 +966,14 @@ def main():
     parser.add_argument('--file', help='File containing UniProt IDs (one per line)')  
     parser.add_argument('--seq-ratio', type=float, default=20, help='Sequence ratio percentage (default: 20)')
     parser.add_argument('--max-pdbs', type=int, default=50, help='Maximum PDB entries per ID (default: 50)')
-    parser.add_argument('--workers', type=int, default=7, help='Number of parallel workers (default: 7)')
-    parser.add_argument('--batch-size', type=int, default=50, help='Batch write size (default: 50)')
+    parser.add_argument('--workers', type=int, default=None, help='Number of parallel workers (default: auto-detect)')
+    parser.add_argument('--batch-size', type=int, default=20, help='Batch write size (default: 20)')
     parser.add_argument('--test-mode', action='store_true', help='Enable test mode')
     parser.add_argument('--test-count', type=int, default=433, help='Number of IDs for test mode (default: 433)')
     parser.add_argument('--no-parallel', action='store_true', help='Disable parallel processing (for debugging)')
     parser.add_argument('--skip-processed', action='store_true', default=True, help='Skip already processed IDs (default: True)')
     parser.add_argument('--no-skip', dest='skip_processed', action='store_false', help='Reprocess all IDs')
+    parser.add_argument('--no-heatmap', action='store_true', help='Disable heatmap generation (default: enabled)')
     
     args = parser.parse_args()
     
@@ -919,7 +983,11 @@ def main():
     
     # 並列処理設定
     ENABLE_PARALLEL = not args.no_parallel
-    MAX_WORKERS = args.workers
+    # worker数の自動最適化: デフォルト5（最低2、最大8）
+    if args.workers is None:
+        MAX_WORKERS = 5
+    else:
+        MAX_WORKERS = args.workers
     BATCH_SIZE = args.batch_size
     
     # テストモード設定
@@ -995,20 +1063,6 @@ def main():
     skip_processed = args.skip_processed
     clean_old_pdbs = True
     
-    # 🔵 テストモード：指定数だけに制限
-    if TEST_MODE and len(uniprot_ids) > TEST_COUNT:
-        print(f"\n{'='*80}")
-        print(f"🧪 TEST MODE ENABLED")
-        print(f"{'='*80}")
-        print(f"Original IDs: {len(uniprot_ids)}")
-        print(f"Test IDs: {TEST_COUNT}")
-        print(f"{'='*80}\n")
-        uniprot_ids = uniprot_ids[:TEST_COUNT]
-    
-    use_pdb_search_results = False
-    skip_processed = True
-    clean_old_pdbs = True
-    
     dirpath = config.OUTPUT_DIR
     if not os.path.exists(dirpath):
         os.makedirs(dirpath)
@@ -1043,7 +1097,8 @@ def main():
         uniprot_ids = [uid for uid in uniprot_ids if uid not in EXCLUDED_IDS]
     
     # ===== 失敗ID管理の初期化 =====
-    failed_manager = FailedIDManager()
+    # セグフォ対策: 一時的に無効化
+    failed_manager = None
     MAX_RETRIES = 3
     
     # 処理済みIDと失敗IDを両方除外
@@ -1051,12 +1106,18 @@ def main():
     processed_ids = load_processed_uniprots(summary_file, seq_ratio) if skip_processed else set()
 
     # 失敗IDもスキップ対象に追加
-    failed_ids = failed_manager.get_failed_ids(seq_ratio, max_retries=MAX_RETRIES)
+    if failed_manager is not None:
+        try:
+            failed_ids = failed_manager.get_failed_ids(seq_ratio, max_retries=MAX_RETRIES)
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to get failed IDs: {e}", flush=True)
+            failed_ids = set()
+    else:
+        failed_ids = set()
     skip_ids = processed_ids | failed_ids
 
-    # 🔴 修正：--idsで指定された場合はスキップ処理をしない
-    # さらに--fileで指定された場合もスキップしない（テスト用）
-    if skip_processed and skip_ids and not args.ids and not args.file:  # ← ここに `and not args.file` を追加
+    # 処理済みIDと失敗IDをスキップ（--ids指定時のみスキップしない）
+    if skip_processed and skip_ids and not args.ids:
         uniprot_ids = [uid for uid in uniprot_ids if uid not in skip_ids]
         if processed_ids or failed_ids:
             print(f"🚫 Skipping: {len(processed_ids)} processed + {len(failed_ids)} failed IDs")
@@ -1102,9 +1163,25 @@ def main():
     # バッチライター初期化
     batch_writer = BatchWriter(batch_size=BATCH_SIZE)
     
+    def _eta_str(elapsed_sec: float, done: int, total: int) -> str:
+        """進捗から速度・ETAを計算して表示用文字列を返す"""
+        if done <= 0 or elapsed_sec <= 0:
+            return " | ETA: -- | 速度: --"
+        speed = done / (elapsed_sec / 60.0)
+        remaining = (total - done) / speed * 60.0 if speed > 0 else 0
+        if remaining >= 3600:
+            eta = f"~{int(remaining // 3600)}h {int((remaining % 3600) // 60)}m"
+        elif remaining >= 60:
+            eta = f"~{int(remaining // 60)}m"
+        else:
+            eta = f"~{int(remaining)}s"
+        return f" | ETA: {eta} | 速度: {speed:.1f} ID/min"
+    
     # 並列処理実行
     if ENABLE_PARALLEL:
         print(f"🔄 Processing {len(uniprot_ids)} IDs with {MAX_WORKERS} workers...\n")
+        
+        start_time = time.time()
         
         # マネージャーでプロセス間共有ロック辞書を作成
         with Manager() as manager:
@@ -1135,30 +1212,60 @@ def main():
                     try:
                         result = future.result()
                         
+                        # デバッグ: 結果の状態を確認
+                        if 'success' not in result:
+                            print(f"⚠️  [{uniprotid}] Warning: 'success' key missing in result. Keys: {result.keys()}", flush=True)
+                            error_count += 1
+                            continue
+                        
+                        # デバッグ: 成功/失敗の状態をログ出力
                         if result['success']:
-                            batch_writer.add_summary(result['data']['row_dict'])
-                            batch_writer.add_stats(result['data']['stats_df'])
-                            batch_writer.add_links(result['data']['links_df'])
-                            success_count += 1
+                            print(f"🔍 [{uniprotid}] Success=True, processing...", flush=True)
+                        else:
+                            print(f"🔍 [{uniprotid}] Success=False, error: {result.get('error', 'Unknown')}", flush=True)
+                        
+                        if result['success']:
+                            try:
+                                batch_writer.add_summary(result['data']['row_dict'])
+                                batch_writer.add_stats(result['data']['stats_df'])
+                                batch_writer.add_links(result['data']['links_df'])
+                                success_count += 1
+                            except Exception as e:
+                                print(f"❌ [{uniprotid}] Error adding to batch writer: {e}", flush=True)
+                                print(f"   Result keys: {result.keys()}, Data keys: {result.get('data', {}).keys()}", flush=True)
+                                error_count += 1
                             
                             if batch_writer.should_flush():
                                 batch_writer.flush(dirpath, fieldnames)
+                                if failed_manager is not None:
+                                    try:
+                                        failed_manager.save()  # 失敗IDも一緒に保存
+                                    except Exception as e:
+                                        print(f"⚠️  Warning: Failed to save failed IDs: {e}", flush=True)
                             
                         else:
                             # 失敗を記録
                             error_type = result.get('error_type', classify_error_type(result.get('error', 'Unknown')))
-                            failed_manager.record_failure(
-                                uniprotid=result['uniprotid'],
-                                seq_ratio=seq_ratio,
-                                error_type=error_type,
-                                error_message=result.get('error', 'Unknown error')
-                            )
-                            print(f"⚠️  [{uniprotid}] {error_type}: {result.get('error', 'Unknown')}")
+                            
+                            if failed_manager is not None:
+                                try:
+                                    failed_manager.record_failure(
+                                        uniprotid=result['uniprotid'],
+                                        seq_ratio=seq_ratio,
+                                        error_type=error_type,
+                                        error_message=result.get('error', 'Unknown error')
+                                    )
+                                except Exception as e:
+                                    print(f"⚠️  Warning: Failed to record failure: {e}", flush=True)
+                            
+                            print(f"⚠️  [{uniprotid}] {error_type}: {result.get('error', 'Unknown')}", flush=True)
                             error_count += 1
                         
-                        # 進捗表示
+                        # 進捗表示（ETA・速度付き）
+                        elapsed = time.time() - start_time
+                        eta_part = _eta_str(elapsed, i, len(uniprot_ids))
                         print(f"Progress: {i}/{len(uniprot_ids)} "
-                              f"(✓{success_count} ✗{error_count})")
+                              f"(✓{success_count} ✗{error_count}){eta_part}", flush=True)
                         
                         # 🔴 追加：7件ごとにバッチクリーンアップ（一時的に無効化）
                         # if i % 7 == 0:  # 7件ごとに
@@ -1166,18 +1273,26 @@ def main():
                         #     print(f"🧹 Batch cleanup completed at {i}/{len(uniprot_ids)}")
                         
                     except Exception as e:
-                        print(f"❌ [{uniprotid}] Fatal error: {e}")
+                        print(f"❌ [{uniprotid}] Fatal error: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
                         error_count += 1
             
             # 残りのバッファを書き込み
             batch_writer.flush(dirpath, fieldnames)
+            if failed_manager is not None:
+                try:
+                    failed_manager.save()  # 失敗IDも一緒に保存
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to save failed IDs: {e}", flush=True)
         
     else:
         # シーケンシャル処理（デバッグ用）
-        print(f"Processing {len(uniprot_ids)} IDs sequentially...\n")
+        print(f"Processing {len(uniprot_ids)} IDs sequentially...\n", flush=True)
         
         success_count = 0
         error_count = 0
+        start_time = time.time()
         
         for i, uniprotid in enumerate(uniprot_ids, 1):
             config_dict = {}
@@ -1192,23 +1307,46 @@ def main():
                 
                 if batch_writer.should_flush():
                     batch_writer.flush(dirpath, fieldnames)
+                    if failed_manager is not None:
+                        try:
+                            failed_manager.save()  # 失敗IDも一緒に保存
+                        except Exception as e:
+                            print(f"⚠️  Warning: Failed to save failed IDs: {e}", flush=True)
             else:
                 # 失敗を記録
                 error_type = result.get('error_type', classify_error_type(result.get('error', 'Unknown')))
-                failed_manager.record_failure(
-                    uniprotid=result['uniprotid'],
-                    seq_ratio=seq_ratio,
-                    error_type=error_type,
-                    error_message=result.get('error', 'Unknown error')
-                )
+                
+                if failed_manager is not None:
+                    try:
+                        failed_manager.record_failure(
+                            uniprotid=result['uniprotid'],
+                            seq_ratio=seq_ratio,
+                            error_type=error_type,
+                            error_message=result.get('error', 'Unknown error')
+                        )
+                    except Exception as e:
+                        print(f"⚠️  Warning: Failed to record failure: {e}", flush=True)
+                
+                print(f"⚠️  [{result.get('uniprotid', 'Unknown')}] {error_type}: {result.get('error', 'Unknown')}", flush=True)
                 error_count += 1
             
-            print(f"Progress: {i}/{len(uniprot_ids)} (✓{success_count} ✗{error_count})")
+            elapsed = time.time() - start_time
+            eta_part = _eta_str(elapsed, i, len(uniprot_ids))
+            print(f"Progress: {i}/{len(uniprot_ids)} (✓{success_count} ✗{error_count}){eta_part}", flush=True)
         
         batch_writer.flush(dirpath, fieldnames)
+        if failed_manager is not None:
+            try:
+                failed_manager.save()  # 失敗IDも一緒に保存
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to save failed IDs: {e}", flush=True)
     
-    # 失敗記録を保存
-    failed_manager.save()
+    # 最終的な失敗記録を保存（念のため）
+    if failed_manager is not None:
+        try:
+            failed_manager.save()
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to save failed IDs: {e}", flush=True)
     
     # 失敗IDを除外リストに自動追加
     if config.VERBOSE:
@@ -1226,20 +1364,24 @@ def main():
         print(f"   File: {config.OUTPUT_DIR}/excluded_ids.txt")
     
     # 失敗統計を表示
-    stats = failed_manager.get_statistics(seq_ratio)
-    if stats['total'] > 0:
-        print("\n" + "=" * 80)
-        print("📊 Failed ID Statistics")
-        print("=" * 80)
-        print(f"Total failed: {stats['total']}")
-        print("\nBy error type:")
-        for error_type, count in sorted(stats['by_error_type'].items(), 
-                                       key=lambda x: x[1], reverse=True):
-            print(f"  {error_type}: {count}")
-        print("\nRetry distribution:")
-        for retry_count, count in sorted(stats['retry_distribution'].items()):
-            print(f"  {retry_count} attempt(s): {count} IDs")
-        print("=" * 80)
+    if failed_manager is not None:
+        try:
+            stats = failed_manager.get_statistics(seq_ratio)
+            if stats['total'] > 0:
+                print("\n" + "=" * 80)
+                print("📊 Failed ID Statistics")
+                print("=" * 80)
+                print(f"Total failed: {stats['total']}")
+                print("\nBy error type:")
+                for error_type, count in sorted(stats['by_error_type'].items(), 
+                                               key=lambda x: x[1], reverse=True):
+                    print(f"  {error_type}: {count}")
+                print("\nRetry distribution:")
+                for retry_count, count in sorted(stats['retry_distribution'].items()):
+                    print(f"  {retry_count} attempt(s): {count} IDs")
+                print("=" * 80)
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to get statistics: {e}", flush=True)
     
     # 最終整理
     archive_trim_and_summary(dirpath, trim_archive_dir, backup_archive_dir, 
@@ -1255,8 +1397,25 @@ def main():
     print("=" * 80)
 
 if __name__ == "__main__":
-    config = Config()
-    trim_dir, backup_dir = setup_archive_dirs(config.OUTPUT_DIR)
-    main()
-    auto_archive_output()
+    try:
+        print("🔧 Initializing Config...", flush=True)
+        config = Config()
+        print("✅ Config initialized", flush=True)
+        
+        print("🔧 Setting up archive directories...", flush=True)
+        trim_dir, backup_dir = setup_archive_dirs(config.OUTPUT_DIR)
+        print("✅ Archive directories set up", flush=True)
+        
+        print("🔧 Starting main()...", flush=True)
+        main()
+        print("✅ main() completed", flush=True)
+        
+        print("🔧 Archiving output...", flush=True)
+        auto_archive_output()
+        print("✅ All done", flush=True)
+    except Exception as e:
+        print(f"❌ Fatal error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 

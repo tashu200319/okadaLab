@@ -18,28 +18,73 @@ from typing import Set, Optional
 class FailedIDManager:
     """失敗したUniProt IDを管理するクラス"""
     
-    def __init__(self, failed_ids_file: str = "/Users/tashiroshuya/Desktop/okadaLab/output/summaries/failed_ids.csv"):
+    def __init__(self, failed_ids_file: Optional[str] = None):
         """
         Parameters
         ----------
-        failed_ids_file : str
-            失敗ID記録ファイルのパス
+        failed_ids_file : str, optional
+            失敗ID記録ファイルのパス（Noneの場合は自動検出）
         """
-        self.failed_ids_file = failed_ids_file
-        self.failed_ids_df = self._load_failed_ids()
+        try:
+            if failed_ids_file is None:
+                # プロジェクトルートを自動検出
+                try:
+                    current_dir = Path(__file__).resolve().parent.parent
+                    failed_ids_file = str(current_dir / "output" / "summaries" / "failed_ids.csv")
+                except Exception as e:
+                    # フォールバック: 相対パスを使用
+                    failed_ids_file = "output/summaries/failed_ids.csv"
+            self.failed_ids_file = failed_ids_file
+            self.failed_ids_df = self._load_failed_ids()
+        except Exception as e:
+            # 初期化に失敗した場合は空のDataFrameを使用
+            print(f"⚠️  Warning: FailedIDManager initialization failed: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            self.failed_ids_file = failed_ids_file or "output/summaries/failed_ids.csv"
+            self.failed_ids_df = pd.DataFrame(columns=['uniprotid', 'seq_ratio', 'error_type', 
+                                                        'error_message', 'timestamp', 'retry_count'])
     
     def _load_failed_ids(self) -> pd.DataFrame:
         """既存の失敗ID記録を読み込む"""
-        if os.path.exists(self.failed_ids_file):
-            try:
-                df = pd.read_csv(self.failed_ids_file)
-                print(f"📋 Loaded {len(df)} failed ID records")
-                return df
-            except Exception as e:
-                print(f"⚠️  Warning: Could not load failed IDs: {e}")
+        if not os.path.exists(self.failed_ids_file):
+            return pd.DataFrame(columns=['uniprotid', 'seq_ratio', 'error_type', 
+                                        'error_message', 'timestamp', 'retry_count'])
+        
+        try:
+            # ファイルが空でないか確認
+            if os.path.getsize(self.failed_ids_file) == 0:
                 return pd.DataFrame(columns=['uniprotid', 'seq_ratio', 'error_type', 
                                             'error_message', 'timestamp', 'retry_count'])
-        else:
+            
+            df = pd.read_csv(self.failed_ids_file)
+            
+            # 空のDataFrameの場合は空のDataFrameを返す
+            if len(df) == 0:
+                return pd.DataFrame(columns=['uniprotid', 'seq_ratio', 'error_type', 
+                                            'error_message', 'timestamp', 'retry_count'])
+            
+            # 必要なカラムが存在するか確認
+            required_columns = ['uniprotid', 'seq_ratio', 'error_type', 
+                              'error_message', 'timestamp', 'retry_count']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                print(f"⚠️  Warning: Missing columns in failed_ids.csv: {missing_columns}")
+                return pd.DataFrame(columns=required_columns)
+            
+            # seq_ratioをfloat型に変換（文字列で読み込まれた場合の対策）
+            if 'seq_ratio' in df.columns:
+                df['seq_ratio'] = pd.to_numeric(df['seq_ratio'], errors='coerce')
+            # retry_countをint型に変換（文字列で読み込まれた場合の対策）
+            if 'retry_count' in df.columns:
+                df['retry_count'] = pd.to_numeric(df['retry_count'], errors='coerce').fillna(0).astype(int)
+            
+            print(f"📋 Loaded {len(df)} failed ID records")
+            return df
+        except Exception as e:
+            print(f"⚠️  Warning: Could not load failed IDs: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame(columns=['uniprotid', 'seq_ratio', 'error_type', 
                                         'error_message', 'timestamp', 'retry_count'])
     
@@ -52,7 +97,7 @@ class FailedIDManager:
         seq_ratio : float
             seq_ratio値
         max_retries : int
-            最大リトライ回数（この回数を超えたIDはスキップ）
+            最大リトライ回数（一時的なエラーの場合のみ適用）
         
         Returns
         -------
@@ -62,14 +107,45 @@ class FailedIDManager:
         if len(self.failed_ids_df) == 0:
             return set()
         
-        # 指定seq_ratioで最大リトライ回数を超えたIDを取得
-        mask = (self.failed_ids_df['seq_ratio'] == seq_ratio) & \
-               (self.failed_ids_df['retry_count'] >= max_retries)
+        # 確実な失敗理由（1回でスキップ）
+        CERTAIN_ERROR_TYPES = {
+            'EMPTY_TRIMSEQUENCE', 'NOT_ENOUGH_CHAINS', 'EMPTY_SUMMARY',
+            'PDB_THRESHOLD', 'EMPTY_SEQDATA', 'EMPTY_ATOMCOORD', 'EMPTY_DISTANCE'
+        }
         
-        failed_ids = set(self.failed_ids_df[mask]['uniprotid'].tolist())
+        # 一時的なエラー（max_retries回まで再試行）
+        TEMPORARY_ERROR_TYPES = {'TIMEOUT', 'DOWNLOAD_ERROR', 'OTHER_ERROR'}
+        
+        # 指定seq_ratioの失敗IDを取得
+        seq_mask = self.failed_ids_df['seq_ratio'] == seq_ratio
+        failed_df = self.failed_ids_df[seq_mask]
+        
+        if len(failed_df) == 0:
+            return set()
+        
+        failed_ids = set()
+        
+        # 確実なエラー: 1回失敗したら即スキップ
+        certain_mask = failed_df['error_type'].isin(CERTAIN_ERROR_TYPES) & \
+                      (failed_df['retry_count'] >= 1)
+        certain_ids = set(failed_df[certain_mask]['uniprotid'].tolist())
+        failed_ids.update(certain_ids)
+        
+        # 一時的なエラー: max_retries回以上失敗したらスキップ
+        temporary_mask = failed_df['error_type'].isin(TEMPORARY_ERROR_TYPES) & \
+                        (failed_df['retry_count'] >= max_retries)
+        temporary_ids = set(failed_df[temporary_mask]['uniprotid'].tolist())
+        failed_ids.update(temporary_ids)
         
         if failed_ids:
-            print(f"🚫 Skipping {len(failed_ids)} IDs (failed {max_retries}+ times)")
+            certain_count = len(certain_ids)
+            temporary_count = len(temporary_ids)
+            if certain_count > 0 and temporary_count > 0:
+                print(f"🚫 Skipping {len(failed_ids)} IDs ({certain_count} certain errors, {temporary_count} temporary errors)")
+            elif certain_count > 0:
+                print(f"🚫 Skipping {len(failed_ids)} IDs ({certain_count} certain errors)")
+            else:
+                print(f"🚫 Skipping {len(failed_ids)} IDs ({temporary_count} failed {max_retries}+ times)")
         
         return failed_ids
     

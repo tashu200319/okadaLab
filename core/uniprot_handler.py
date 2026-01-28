@@ -4,6 +4,7 @@ UniProtデータベースからの情報取得モジュール (XML/JSONフォー
 
 import re
 import json
+import time
 import requests
 from lxml import etree
 import pandas as pd
@@ -30,42 +31,91 @@ class UniprotData:
             raise Exception(f"Failed to fetch UniProt data for {uniprot_id} in both XML and JSON formats")
     
     def _try_xml(self, uniprot_id: str) -> bool:
-        """XML形式でデータ取得を試行"""
+        """XML形式でデータ取得を試行（リトライ機能付き）"""
         url = f"https://www.uniprot.org/uniprot/{uniprot_id}.xml"
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            self.xml = etree.fromstring(response.content)
-            self.nsmap = self.xml.nsmap
-            
-            # XMLフォーマットのチェック
-            TF = self.xml.find('./', self.nsmap)
-            if TF is not None and TF.text and TF.text != '\n  ':
-                # 著作権メッセージなどが返ってきた場合
-                if 'Copyright' in TF.text or 'Creative Commons' in TF.text:
+        max_retries = 3
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, timeout=30)
+                
+                # 429エラー（レート制限）の場合は待機
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', base_delay * (2 ** attempt)))
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after)
+                        continue
+                
+                response.raise_for_status()
+                self.xml = etree.fromstring(response.content)
+                self.nsmap = self.xml.nsmap
+                
+                # XMLフォーマットのチェック
+                TF = self.xml.find('./', self.nsmap)
+                if TF is not None and TF.text and TF.text != '\n  ':
+                    # 著作権メッセージなどが返ってきた場合
+                    if 'Copyright' in TF.text or 'Creative Commons' in TF.text:
+                        return False
+                
+                # entry要素が存在するかチェック
+                entry = self.xml.find('./entry', self.nsmap)
+                if entry is None:
                     return False
-            
-            # entry要素が存在するかチェック
-            entry = self.xml.find('./entry', self.nsmap)
-            if entry is None:
+                
+                return True
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    # 指数バックオフでリトライ
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
                 return False
-            
-            return True
-            
-        except Exception as e:
-            # XMLでの取得失敗
-            return False
+            except Exception as e:
+                # XMLでの取得失敗
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
+                return False
+        return False
     
     def _try_json(self, uniprot_id: str) -> bool:
-        """JSON形式でデータ取得を試行"""
+        """JSON形式でデータ取得を試行（リトライ機能付き）"""
         url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}?format=json"
-        try:
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            self.json_data = response.json()
-            return True
-        except Exception as e:
-            return False
+        max_retries = 3
+        base_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, timeout=30)
+                
+                # 429エラー（レート制限）の場合は待機
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', base_delay * (2 ** attempt)))
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after)
+                        continue
+                
+                response.raise_for_status()
+                self.json_data = response.json()
+                return True
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    # 指数バックオフでリトライ
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
+                return False
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
+                return False
+        return False
     
     def get_id(self) -> List[str]:
         """UniProt IDのリストを取得"""

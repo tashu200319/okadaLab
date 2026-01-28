@@ -33,7 +33,7 @@ def calculat(atom1: np.ndarray, atom2: np.ndarray) -> float:
 
 def getdistance2(atomcoord: pd.DataFrame) -> pd.DataFrame:
     """
-    全残基ペア間の距離を計算
+    全残基ペア間の距離を計算（ベクトル化版）
     
     Parameters
     ----------
@@ -48,23 +48,32 @@ def getdistance2(atomcoord: pd.DataFrame) -> pd.DataFrame:
     id_col = atomcoord.iloc[:, 0].name
     cols = atomcoord.iloc[:, 1::4].columns.tolist()
     
-    distance = pd.DataFrame({
-        id_col: [str(int(a)+1) + ", " + str(int(b)+1) 
-                for a, b in combinations(map(str, atomcoord.index), 2)],
-        "residue pair": [resi0 + ", " + resi1 
-                        for resi0, resi1 in combinations(atomcoord[id_col], 2)],
-        **{col: np.nan for col in cols}
-    })
-    
     combination = list(combinations(range(len(atomcoord)), 2))
+    n_pairs = len(combination)
+    
+    # 修正: combinationから直接id_valsを生成（順序を保証）
+    # これにより、combinationとid_valsの順序が完全に一致する
+    id_vals = [str(a+1) + ", " + str(b+1) for a, b in combination]
+    pair_vals = [resi0 + ", " + resi1 
+                 for resi0, resi1 in combinations(atomcoord[id_col], 2)]
+    
+    data = {id_col: id_vals, "residue pair": pair_vals}
+    
+    # ベクトル化: インデックス配列を作成
+    n1_arr = np.array([c[0] for c in combination], dtype=np.intp)
+    n2_arr = np.array([c[1] for c in combination], dtype=np.intp)
     
     for i, col in enumerate(cols):
-        i = (i * 4) + 2
-        atoms = atomcoord.iloc[:, i:i+3].to_numpy()
-        distance[col] = [calculat(atoms[n1], atoms[n2]) 
-                        for n1, n2 in combination]
+        col_idx = (i * 4) + 2
+        atoms = atomcoord.iloc[:, col_idx:col_idx+3].to_numpy(dtype=np.float64)
+        
+        # ベクトル化計算: 全ペアの差分を一度に計算
+        d = atoms[n1_arr] - atoms[n2_arr]
+        d = np.rint(d * 1000)
+        dist = np.sqrt(np.sum(d ** 2, axis=1)) / 1000.0
+        data[col] = dist
     
-    return distance
+    return pd.DataFrame(data)
 
 
 def getscore(distance: pd.DataFrame, ddof: int = 0) -> pd.DataFrame:

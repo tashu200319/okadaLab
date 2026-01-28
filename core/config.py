@@ -43,6 +43,9 @@ class Config:
         # 除外するPDB ID（カンマまたはスペース区切り）
         self.NEGATIVE_PDBID = ""
         
+        # 入力設定
+        self.INPUT_FILE = "./chunks/chunk_1.csv"  # デフォルトの入力CSVファイル
+        
         # 出力設定
         self.OUTPUT_DIR = "./output/"
         self.EXPORT = True              # CSV出力するか
@@ -369,6 +372,12 @@ class Config:
         try:
             # failed_ids.csvを読み込み
             df = pd.read_csv(failed_ids_file)
+            
+            # 型変換（文字列で読み込まれた場合の対策）
+            if 'seq_ratio' in df.columns:
+                df['seq_ratio'] = pd.to_numeric(df['seq_ratio'], errors='coerce')
+            if 'retry_count' in df.columns:
+                df['retry_count'] = pd.to_numeric(df['retry_count'], errors='coerce').fillna(0).astype(int)
             
             # 指定seq_ratioで最大リトライ回数を超えたIDを抽出
             mask = (df['seq_ratio'] == seq_ratio) & (df['retry_count'] >= max_retries)

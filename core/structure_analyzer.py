@@ -4,33 +4,109 @@ PDB/mmCIF構造ファイルの解析モジュール (修正版)
 
 import os
 import gzip
+import time
+import threading
 from mimetypes import guess_type
 import pandas as pd
+import requests
 from Bio.PDB import PDBList
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from typing import List
 
 
-pdb_list = PDBList()
+_pdb_list = None
+def _get_pdb_list():
+    global _pdb_list
+    if _pdb_list is None:
+        _pdb_list = PDBList()
+    return _pdb_list
+
+# レート制限用（PDBダウンロード間隔制御）
+_pdb_download_lock = threading.Lock()
+_last_pdb_download_time = 0.0
+_DEFAULT_PDB_DELAY_SEC = 2.0  # デフォルト2秒間隔
+_DEFAULT_PDB_TIMEOUT_SEC = 120.0  # タイムアウト（秒）。大きいCIF用
+_DEFAULT_PDB_RETRIES = 3  # リトライ回数
+_RCSB_CIF_URL = "https://files.rcsb.org/view/{pdbid}.cif"  # HTTPSで安定
 
 
-def downloadpdb(pdbid: str):
+def _download_via_requests(pdbid: str, timeout_sec: float, out_path: str) -> bool:
+    """requests で RCSB HTTPS から CIF を取得。成功時 True。"""
+    url = _RCSB_CIF_URL.format(pdbid=pdbid.lower())
+    try:
+        r = requests.get(url, timeout=timeout_sec, stream=True)
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        return True
+    except Exception:
+        return False
+
+
+def _downloadpdb_with_retry(pdbid: str, cif_file: str, delay_sec: float) -> bool:
+    """リトライ・タイムアウト付きで CIF を取得。HTTPS 優先、失敗時 PDBList にフォールバック。"""
+    timeout_sec = float(os.environ.get("DSA_PDB_TIMEOUT_SEC", _DEFAULT_PDB_TIMEOUT_SEC))
+    max_retries = int(os.environ.get("DSA_PDB_RETRIES", _DEFAULT_PDB_RETRIES))
+    os.makedirs("pdb_files", exist_ok=True)
+
+    for attempt in range(max_retries):
+        if _download_via_requests(pdbid, timeout_sec, cif_file):
+            return True
+        backoff = min(5 * (2 ** attempt), 60)
+        if attempt < max_retries - 1:
+            time.sleep(backoff)
+
+    try:
+        _get_pdb_list().retrieve_pdb_file(pdbid, pdir="pdb_files/", file_format="mmCif", overwrite=False)
+        return True
+    except Exception as e:
+        print(f"Desired structure not found or download failed. '{pdbid}': {e}")
+        return False
+
+
+def downloadpdb(pdbid: str, delay_sec: float = None) -> bool:
     """
-    PDBファイルをダウンロード
+    PDB CIF をダウンロード（レート制限・リトライ・タイムアウト対策付き）
     
-    Parameters
-    ----------
-    pdbid : str
-        PDB ID (例: 1ABC)
+    - RCSB HTTPS (files.rcsb.org) を優先。失敗時は PDBList にフォールバック。
+    - リトライ: 環境変数 DSA_PDB_RETRIES またはデフォルト 3 回、指数バックオフ。
+    - タイムアウト: 環境変数 DSA_PDB_TIMEOUT_SEC またはデフォルト 120 秒。
+    - 間隔: 環境変数 DSA_PDB_DELAY_SEC またはデフォルト 2 秒。
     """
-    import os
+    global _last_pdb_download_time
+    
+    if delay_sec is None:
+        delay_sec = float(os.environ.get("DSA_PDB_DELAY_SEC", _DEFAULT_PDB_DELAY_SEC))
+    
     cif_file = f"pdb_files/{pdbid.lower()}.cif"
-    if not os.path.exists(cif_file):
+    cache_hit = os.path.exists(cif_file)
+    
+    # 空ファイル（0バイト）を検出して再ダウンロード
+    if cache_hit:
         try:
-            pdb_list.retrieve_pdb_file(pdbid, pdir="pdb_files/", file_format="mmCif", overwrite=False)
-        except Exception as e:
-            print(f"Desired structure not found or download failed. '{pdbid}': {e}")
-            return False
+            if os.path.getsize(cif_file) == 0:
+                # 空ファイルを削除して再ダウンロード
+                os.remove(cif_file)
+                cache_hit = False
+        except OSError:
+            # ファイルサイズ取得に失敗した場合は再ダウンロード
+            cache_hit = False
+    
+    if not cache_hit and delay_sec > 0:
+        with _pdb_download_lock:
+            elapsed = time.time() - _last_pdb_download_time
+            if elapsed < delay_sec:
+                time.sleep(delay_sec - elapsed)
+            _last_pdb_download_time = time.time()
+    
+    if not cache_hit:
+        ok = _downloadpdb_with_retry(pdbid, cif_file, delay_sec)
+        if ok and delay_sec > 0:
+            with _pdb_download_lock:
+                _last_pdb_download_time = time.time()
+        return ok
     return True
 
 
@@ -57,15 +133,18 @@ class CifData:
     https://mmcif.pdbj.org/dictionaries/mmcif_pdbx_v50.dic/Items/index.html
     """
     
-    def __init__(self, pdbid: str):
+    def __init__(self, pdbid: str, skip_download: bool = False):
         """
         Parameters
         ----------
         pdbid : str
             PDB ID
+        skip_download : bool
+            Trueの場合、PDBダウンロードをスキップ（既にダウンロード済みの場合）
         """
         self.pdbid = pdbid
-        downloadpdb(self.pdbid)
+        if not skip_download:
+            downloadpdb(self.pdbid)
         
         try:
             with _open(self.pdbid) as handle:

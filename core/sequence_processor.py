@@ -9,6 +9,7 @@ from mimetypes import guess_type
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 from typing import Dict
 from core.structure_analyzer import downloadpdb
+from typing import Callable, Optional
 
 
 def _open_cif(pdbid: str):
@@ -132,8 +133,34 @@ def getcoord(
     *,
     verbose: bool = False,
     logger=None,
+    download_func: Optional[Callable[[str], bool]] = None,
 ) -> pd.DataFrame:
-    """原子座標を取得(PDBファイルから直接) - 型不一致を修正"""
+    """
+    原子座標を取得(PDBファイルから直接) - 型不一致を修正
+    
+    Parameters
+    ----------
+    trimsequence : pd.DataFrame
+        トリムされた配列データ
+    uniprotid : str
+        UniProt ID
+    verbose : bool, optional
+        詳細ログを出力するかどうか
+    logger : optional
+        ロガーオブジェクト
+    download_func : Callable[[str], bool], optional
+        PDBダウンロード関数。Noneの場合はデフォルトのdownloadpdbを使用。
+        並列処理時はプロセス間ロック付きの関数（例: safe_download_pdb）を渡すことを推奨。
+    
+    Returns
+    -------
+    pd.DataFrame
+        原子座標データ
+    """
+    # ダウンロード関数の選択（デフォルトはdownloadpdb）
+    if download_func is None:
+        download_func = downloadpdb
+    
     atomcoord = pd.DataFrame(trimsequence.iloc[:, 0])
     atomindex = atomcoord.index.tolist()
     trimseq = trimsequence.iloc[:, 1:].map(
@@ -147,7 +174,7 @@ def getcoord(
         pdbids.setdefault(pdbid, []).append(strand_id)
     
     for pdbid, chain_id in pdbids.items():
-        if not downloadpdb(pdbid):
+        if not download_func(pdbid):
             continue
         
         try:

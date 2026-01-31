@@ -68,6 +68,24 @@ python tools/plot_score_log.py --both
 
 当面は互換のため `chunks/` も読めますが、**新しく置くなら `data/chunks/` が標準**です。
 
+## 配布（外付けHDDで渡す場合）
+
+このプロジェクトは外付けHDDで配布します。作業するPCに `okadaLab/` フォルダごとコピーして使ってください。
+
+- **正本**: コピーした `okadaLab/` フォルダ
+- **生成物**: `output/` に出ます（git管理外）
+
+## セットアップ（推奨: venv）
+
+別PCでも環境差分で壊れないよう、プロジェクト専用のPython環境（venv）を作ることを推奨します。
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+```
+
 ## 連番でchunkを1つずつ実行する（標準）
 
 `data/chunks/chunk_1.csv` → `data/chunks/chunk_2.csv` → … の順に、**1個ずつ** `main.py` を回します。  

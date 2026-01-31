@@ -8,6 +8,7 @@ import pandas as pd
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 def extract_ids_from_summary(summary_file, seq_ratio=20):
     """summary.csvからIDを抽出（既に書き込まれているID）"""
@@ -50,15 +51,28 @@ def extract_ids_from_failed(failed_file, seq_ratio=20):
         return set()
 
 def main():
-    # ファイルパス
-    summary_file = "output/summaries/summary.csv"
-    failed_file = "/Users/tashiroshuya/Desktop/Desktop/summaries/failed_ids.csv"
-    
-    # パラメータ
-    seq_ratio = 20
-    max_pdbs = 50
-    workers = 5
-    batch_size = 20
+    base_dir = Path(__file__).resolve().parents[1]
+
+    import argparse
+    parser = argparse.ArgumentParser(description="Re-analyze IDs from failed_ids.csv excluding already-written summary IDs")
+    parser.add_argument("--summary-file", default=str(base_dir / "output" / "summaries" / "summary.csv"))
+    parser.add_argument("--failed-file", default=str(base_dir / "output" / "summaries" / "failed_ids.csv"))
+    parser.add_argument("--seq-ratio", type=float, default=20.0)
+    parser.add_argument("--max-pdbs", type=int, default=50)
+    parser.add_argument("--workers", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--no-heatmap", action="store_true", help="Disable heatmap generation")
+    parser.add_argument("--output-dir", default=str(base_dir / "output"), help="Output directory (passed to main.py)")
+
+    args = parser.parse_args()
+
+    summary_file = args.summary_file
+    failed_file = args.failed_file
+    seq_ratio = args.seq_ratio
+    max_pdbs = args.max_pdbs
+    workers = args.workers
+    batch_size = args.batch_size
+    output_dir = args.output_dir
     
     # IDを抽出
     print("=" * 80)
@@ -87,12 +101,13 @@ def main():
     print(f"   - Target for re-analysis: {len(target_ids)}")
     
     # IDをファイルに書き出し
-    ids_file = "reanalyze_ids.txt"
-    with open(ids_file, 'w') as f:
+    ids_path = Path(output_dir) / "reanalyze" / "reanalyze_ids.txt"
+    ids_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ids_path, 'w') as f:
         for uid in sorted(target_ids):
             f.write(f"{uid}\n")
     
-    print(f"\n💾 IDs saved to {ids_file}")
+    print(f"\n💾 IDs saved to {ids_path}")
     
     # main.pyを実行（--no-skipは不要、既に除外済み）
     print("\n" + "=" * 80)
@@ -101,11 +116,12 @@ def main():
     
     cmd = [
         sys.executable, "-u", "main.py",
-        "--file", ids_file,
+        "--file", str(ids_path),
         "--seq-ratio", str(seq_ratio),
         "--max-pdbs", str(max_pdbs),
         "--workers", str(workers),
         "--batch-size", str(batch_size),
+        "--output-dir", str(output_dir),
         "--no-heatmap"
         # --no-skipは不要（既に除外済み）
     ]
@@ -114,7 +130,7 @@ def main():
     print()
     
     # 実行
-    subprocess.run(cmd)
+    subprocess.run(cmd, cwd=str(base_dir))
 
 if __name__ == "__main__":
     main()

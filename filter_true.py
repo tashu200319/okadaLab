@@ -1,27 +1,25 @@
-import pandas as pd
-import os
+#!/usr/bin/env python3
+"""
+互換ラッパー（旧: filter_true.py）。
 
-# 設定
-input_file = './output/manual_xray_em_check.csv'
-output_file = './output/only_true_results.csv'
+新しい入口は `python scripts/prep_true_results.py` です。
+このファイルは過去の手順互換のために残し、scripts版へ委譲します。
+"""
 
-if not os.path.exists(input_file):
-    print(f"❌ Error: {input_file} が見つかりません。")
-else:
-    # CSV読み込み
-    df = pd.read_csv(input_file)
-    
-    # 3列目（インデックス2）が True または "True" のものを抽出
-    # bool型と文字列型の両方に対応
-    mask = (df.iloc[:, 2] == True) | (df.iloc[:, 2].astype(str).str.upper() == 'TRUE')
-    filtered_df = df[mask]
-    
-    # 保存
-    filtered_df.to_csv(output_file, index=False)
-    
-    print("-" * 30)
-    print(f"✅ 抽出完了!")
-    print(f"📂 入力ファイル: {input_file}")
-    print(f"📄 出力ファイル: {output_file}")
-    print(f"🔢 該当件数: {len(filtered_df)} 件")
-    print("-" * 30)
+from __future__ import annotations
+
+import runpy
+from pathlib import Path
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parent
+    target = root / "scripts" / "prep_true_results.py"
+    if not target.exists():
+        raise SystemExit(f"❌ scripts/prep_true_results.py not found: {target}")
+    runpy.run_path(str(target), run_name="__main__")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

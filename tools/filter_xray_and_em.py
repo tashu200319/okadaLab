@@ -76,11 +76,11 @@ def filter_from_summary(summary_file: str = None,
         summary_file = Path(summary_file)
 
     if output_dir is None:
-        output_dir = BASE_DIR / "output2"
+        output_dir = BASE_DIR / "output" / "summaries" / "xray_em"
     else:
         output_dir = Path(output_dir)
 
-    # output2 ディレクトリを作成
+    # 出力ディレクトリを作成
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"📁 Created directory: {output_dir}")
@@ -119,7 +119,7 @@ def filter_from_summary(summary_file: str = None,
     # フィルタリング
     filtered_df = df[df['uniprotid'].isin(both_methods_ids)]
     
-    # output2 ディレクトリに保存
+    # 出力ディレクトリに保存
     output_file = output_dir / "summary_xray_and_em.csv"
     filtered_df.to_csv(output_file, index=False)
 
@@ -135,7 +135,7 @@ def filter_from_summary(summary_file: str = None,
     print("=" * 80)
     
     # 詳細レポート保存
-    report_file = os.path.join(output_dir, "xray_em_report.csv")
+    report_file = str(output_dir / "xray_em_report.csv")
     results_df = pd.DataFrame(results)
     results_df.to_csv(report_file, index=False)
     print(f"Detailed report saved to: {report_file}")
@@ -143,14 +143,18 @@ def filter_from_summary(summary_file: str = None,
     return both_methods_ids
 
 
-def filter_from_links(links_file: str = "./output/links/uniprot_pdb_links.csv",
-                     output_dir: str = "./output2/"):
+def filter_from_links(links_file: str = None,
+                     output_dir: str = None):
     """
     uniprot_pdb_links.csv から X-ray AND EM の両方を持つエントリをフィルタリング
     """
     import os
+    if links_file is None:
+        links_file = str(BASE_DIR / "output" / "links" / "uniprot_pdb_links.csv")
+    if output_dir is None:
+        output_dir = str(BASE_DIR / "output" / "summaries" / "xray_em")
     if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
     
     if not pd.io.common.file_exists(links_file):
         print(f"❌ Error: {links_file} not found")
@@ -177,7 +181,7 @@ def filter_from_links(links_file: str = "./output/links/uniprot_pdb_links.csv",
     # フィルタリング
     filtered_df = df[df['uniprotid'].isin(both_methods_ids)]
     
-    # output2 ディレクトリに保存
+    # 出力ディレクトリに保存
     output_file = os.path.join(output_dir, "uniprot_pdb_links_xray_and_em.csv")
     filtered_df.to_csv(output_file, index=False)
     
@@ -189,12 +193,13 @@ def generate_comparison_report(summary_file: str = None,
                                output_dir: str = None):
 
     if summary_file is None:
-        summary_file = BASE_DIR / "output2" / "summary_xray_and_em.csv"  # ←ここへ変更
+        # filter_from_summary の出力をデフォルトにする
+        summary_file = BASE_DIR / "output" / "summaries" / "xray_em" / "summary_xray_and_em.csv"
     else:
         summary_file = Path(summary_file)
 
     if output_dir is None:
-        output_dir = BASE_DIR / "output2"
+        output_dir = BASE_DIR / "output" / "summaries" / "xray_em"
     else:
         output_dir = Path(output_dir)
 
@@ -246,7 +251,8 @@ def generate_comparison_report(summary_file: str = None,
         report['em_count'].append(info['em_count'])
     
     report_df = pd.DataFrame(report)
-    report_file = "./output/summaries/method_comparison.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_file = str(output_dir / "method_comparison.csv")
     report_df.to_csv(report_file, index=False)
     print(f"\nComparison report saved to: {report_file}")
     

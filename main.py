@@ -65,7 +65,9 @@ def classify_error_type(error_msg: str) -> str:
         return 'UNKNOWN'
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
+# main.py はリポジトリ直下に置かれている前提のため、親ディレクトリがルートになる
+# （parents[1] だと 1階層上＝プロジェクト外を指してしまう）
+BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 ARCHIVE_DIR = OUTPUT_DIR / "archive"
 TRIM_DIR = ARCHIVE_DIR / "trimsequence"
@@ -964,6 +966,8 @@ def main():
     parser = argparse.ArgumentParser(description='DSA Analysis - High Performance Mode')
     parser.add_argument('--ids', nargs='+', help='Specific UniProt IDs to analyze (e.g., --ids P01308 P00789)')
     parser.add_argument('--file', help='File containing UniProt IDs (one per line)')  
+    parser.add_argument('--output-dir', type=str, default=None,
+                        help='Output directory (overrides Config.OUTPUT_DIR). Example: --output-dir ./output')
     parser.add_argument('--seq-ratio', type=float, default=20, help='Sequence ratio percentage (default: 20)')
     parser.add_argument('--max-pdbs', type=int, default=50, help='Maximum PDB entries per ID (default: 50)')
     parser.add_argument('--workers', type=int, default=None, help='Number of parallel workers (default: auto-detect)')
@@ -994,8 +998,11 @@ def main():
     TEST_MODE = args.test_mode
     TEST_COUNT = args.test_count
     
-    # ===== Config初期化とID読み込み =====
-    config = Config()
+    # ===== Config初期化（引数 > Config > デフォルト相対パス） =====
+    config_kwargs = {}
+    if args.output_dir:
+        config_kwargs["OUTPUT_DIR"] = args.output_dir
+    config = Config(**config_kwargs)
     
     # コマンドライン引数でIDが指定されていればそれを使用
     if args.ids:

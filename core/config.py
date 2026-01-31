@@ -44,7 +44,11 @@ class Config:
         self.NEGATIVE_PDBID = ""
         
         # 入力設定
-        self.INPUT_FILE = "./chunks/chunk_1.csv"  # デフォルトの入力CSVファイル
+        # 入力設定（標準: data/chunks/。無ければ従来の chunks/ にフォールバック）
+        if Path("./data/chunks/chunk_1.csv").exists():
+            self.INPUT_FILE = "./data/chunks/chunk_1.csv"
+        else:
+            self.INPUT_FILE = "./chunks/chunk_1.csv"  # デフォルトの入力CSVファイル（旧）
         
         # 出力設定
         self.OUTPUT_DIR = "./output/"

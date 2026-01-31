@@ -44,7 +44,26 @@ def plot_score_scatter(csv_file: str,
         保存した画像のパス
     """
     # データ読み込み
-    df = pd.read_csv(csv_file)
+    # 一部の score_details_*.csv が実体として PNG 等のバイナリになっている場合があるため、
+    # 先頭シグネチャと読み込みエラーを見て安全にスキップする
+    try:
+        with open(csv_file, 'rb') as f:
+            sig = f.read(8)
+        if sig.startswith(b'\x89PNG\r\n\x1a\n'):
+            print(f"⚠️  Skipping {csv_file}: looks like PNG (wrong extension)")
+            return None
+    except Exception as e:
+        print(f"⚠️  Skipping {csv_file}: failed to read file header ({e})")
+        return None
+
+    try:
+        df = pd.read_csv(csv_file)
+    except UnicodeDecodeError:
+        print(f"⚠️  Skipping {csv_file}: UnicodeDecodeError (not a text CSV)")
+        return None
+    except pd.errors.ParserError as e:
+        print(f"⚠️  Skipping {csv_file}: ParserError ({e})")
+        return None
     
     # 必要な列をチェック
     required_cols = ['distance mean']
@@ -135,12 +154,6 @@ def plot_score_scatter(csv_file: str,
         print(f"↩️  Skip (already exists): {os.path.basename(output_file)}")
         plt.close()
         return None
-    
-    plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
-    plt.close()
-    
-    return output_file
-
     
     plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
     plt.close()
@@ -243,10 +256,15 @@ def plot_all_score_scatter(input_dir: str,
     
     return output_files
 
-def reorganize_existing_plots(scatter_dir: str = '/Users/tashiroshuya/Desktop/okadalab/output/score_details/scatter'):
+def reorganize_existing_plots(scatter_dir: str = None):
     """既存の散布図を整理（新旧両方の命名規則に対応）"""
     import shutil
     import glob
+
+    # デフォルトはリポジトリ相対（絶対パスを避けて移動耐性を上げる）
+    if scatter_dir is None:
+        base_dir = Path(__file__).resolve().parents[1]
+        scatter_dir = str(base_dir / "output" / "score_details" / "scatter")
     
     # with_and_search内にサブディレクトリ作成
     with_and_search_dir = os.path.join(scatter_dir, 'with_and_search')
@@ -340,17 +358,21 @@ def main():
     import argparse
     import os
 
+    # デフォルトはリポジトリ相対（絶対パスを避けて移動耐性を上げる）
+    base_dir = Path(__file__).resolve().parents[1]
+    default_output_dir = base_dir / "output"
+
     parser = argparse.ArgumentParser(
         description="Generate scatter plots with score_log or distance_std from score_details files"
     )
     parser.add_argument(
         "--input-dir",
-        default="/Users/tashiroshuya/Desktop/okadaLab/output/score_details/with_and_search",
+        default=str(default_output_dir / "score_details" / "with_and_search"),
         help="Input directory containing score_details CSV files",
     )
     parser.add_argument(
         "--output-root",
-        default="/Users/tashiroshuya/Desktop/okadaLab/output/score_details/scatter",
+        default=str(default_output_dir / "score_details" / "scatter"),
         help="Root output directory (default: .../scatter)",
     )
     parser.add_argument(
@@ -359,6 +381,11 @@ def main():
         default="score_log",
         help="Y-axis type: score_log or distance_std (default: score_log)",
     )
+    parser.add_argument(
+        "--both",
+        action="store_true",
+        help="Generate both score_log and distance_std plots",
+    )
     parser.add_argument("--point-size", type=int, default=5)
     parser.add_argument("--alpha", type=float, default=0.4)
     parser.add_argument("--dpi", type=int, default=300)
@@ -366,21 +393,37 @@ def main():
 
     args = parser.parse_args()
 
-    # ★ y_axis に応じて出力先を自動で決める
-    if args.y_axis == "score_log":
-        output_dir = os.path.join(args.output_root, "with_score_log")
+    # --bothが指定された場合は両方のプロットを生成
+    if args.both:
+        y_axes = ["score_log", "distance_std"]
     else:
-        output_dir = os.path.join(args.output_root, "with_distance_std")
+        y_axes = [args.y_axis]
 
-    plot_all_score_scatter(
-        input_dir=args.input_dir,
-        output_dir=output_dir,
-        y_axis=args.y_axis,
-        point_size=args.point_size,
-        alpha=args.alpha,
-        dpi=args.dpi,
-        max_files=args.max_files,
-    )
+    all_output_files = []
+    for y_axis in y_axes:
+        # y_axis に応じて出力先を自動で決める
+        if y_axis == "score_log":
+            output_dir = os.path.join(args.output_root, "with_score_log")
+        else:
+            output_dir = os.path.join(args.output_root, "with_distance_std")
+
+        output_files = plot_all_score_scatter(
+            input_dir=args.input_dir,
+            output_dir=output_dir,
+            y_axis=y_axis,
+            point_size=args.point_size,
+            alpha=args.alpha,
+            dpi=args.dpi,
+            max_files=args.max_files,
+        )
+        all_output_files.extend(output_files)
+    
+    if args.both:
+        print("\n" + "=" * 80)
+        print("Total Summary")
+        print("=" * 80)
+        print(f"✓ Successfully created: {len(all_output_files)} plots (both types)")
+        print("=" * 80)
 
 if __name__ == "__main__":
     main()

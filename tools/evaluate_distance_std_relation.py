@@ -21,7 +21,13 @@ def extract_uniprot_id(csv_path: str) -> str:
     return base.replace("score_details_", "").split("_")[0]
 
 def eval_one_csv(csv_path: str):
-    df = pd.read_csv(csv_path)
+    # 一部の score_details_*_20.csv は実体が PNG などのバイナリの可能性があるため、
+    # UnicodeDecodeError などの読み込みエラーが発生した場合はスキップする
+    try:
+        df = pd.read_csv(csv_path)
+    except UnicodeDecodeError:
+        print(f"Skipping (UnicodeDecodeError): {csv_path}")
+        return None
 
     if "distance mean" not in df.columns or "distance std" not in df.columns:
         return None

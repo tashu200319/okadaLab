@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 RefSeq ID → UniProt ID 変換スクリプト
-変換後、diagnose_and_fix.py で解析可能か診断できます
+変換後は main.py または ./scripts/run_all_chunks.sh で解析できます
 """
 
 import requests
@@ -215,8 +215,8 @@ Examples:
   # Convert specific IDs
   python refseq_to_uniprot_converter.py --ids NM_001178430 NR_132154
   
-  # After conversion, diagnose with:
-  python diagnose_and_fix.py
+  # After conversion, analyze with:
+  ./scripts/run_all_chunks.sh
         """
     )
     
@@ -260,8 +260,8 @@ Examples:
         print(f"\n{'=' * 80}")
         print("Next Steps")
         print(f"{'=' * 80}")
-        print("1. Diagnose converted UniProt IDs:")
-        print("   python diagnose_and_fix.py")
+        print("1. Analyze converted UniProt IDs:")
+        print("   ./scripts/run_all_chunks.sh")
         print()
         print("2. Or directly analyze in main.py:")
         print("   uniprot_ids = open('./output/converted_uniprots.txt').read().strip().split('\\n')")

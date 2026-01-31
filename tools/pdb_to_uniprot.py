@@ -269,7 +269,7 @@ if __name__ == "__main__":
         print(f"📁 Output files created:")
         print(f"  1. ./output/links/pdb_to_uniprot_results.csv (all mappings)")
         print(f"  2. ./output/links/unique_uniprots.csv (unique UniProts only)")
-        print(f"\n🚀 Next step: Run 'python diagnose_and_fix.py' to check analyzability")
+        print(f"\n🚀 Next step: Run analysis with ./scripts/run_all_chunks.sh (or main.py --ids/--file)")
         print(f"{'=' * 80}")
     else:
         print("\n❌ No PDB-UniProt mappings found.")
